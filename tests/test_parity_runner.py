@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import tempfile
 import unittest
@@ -137,6 +138,71 @@ class ParityRunnerTests(unittest.TestCase):
             self.assertEqual(parity.affected_harnesses(found, records, {"tools/test_light_parity.py"}), {"light", "new"})
             self.assertEqual(parity.affected_harnesses(found, records, {"Cargo.lock"}), {"food", "light", "new"})
             self.assertEqual(parity.affected_harnesses(found, records, {"README.md"}), {"new"})
+
+    def test_legacy_paths_select_the_same_harness_as_canonical_paths(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.multiple(
+                parity, ROOT=Path(temp), SHARED=Path(temp, "shared")):
+            found = {name: Path(temp, "tools", f"test_{name}_parity.py")
+                     for name in ("canonical", "legacy", "empty", "unknown")}
+            records = {"canonical": {"dependencies": ["crates/a/src/lib.rs#keep:food,light"]},
+                       "legacy": {"dependencies": [r"crates\a\src\lib.rs#keep:food,light"]},
+                       "empty": {"dependencies": []}, "unknown": {"dependencies": None}}
+            state = Path(temp, "state.json")
+            state.write_text(json.dumps({"harnesses": records, "hashes": {}}), encoding="utf-8")
+            with mock.patch.object(parity, "STATE", state):
+                records = parity.load_state()["harnesses"]
+            self.assertEqual(parity.affected_harnesses(found, records, {"crates/a/src/lib.rs"}, reach=False),
+                             {"canonical", "legacy", "unknown"})
+            self.assertEqual(parity.affected_harnesses(found, records, {"README.md"}, reach=False), {"unknown"})
+            self.assertEqual(parity.affected_harnesses(found, records, {"Cargo.lock"}, reach=False), set(found))
+            self.assertEqual(parity.canonical_dependency_path(r"crates\a\src\lib.rs#keep:food,light"),
+                             "crates/a/src/lib.rs#keep:food,light")
+
+    def test_shared_legacy_dependencies_are_used_for_selection(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.multiple(
+                parity, ROOT=Path(temp), SHARED=Path(temp, "shared")):
+            template = Path(temp, "shared/dependencies/food.json")
+            template.parent.mkdir(parents=True)
+            template.write_text(json.dumps({"dependencies": [r"crates\a\src\food.rs"]}), encoding="utf-8")
+            found = {"food": Path(temp, "tools/test_food_parity.py")}
+            self.assertEqual(parity.affected_harnesses(found, {}, {"crates/a/src/food.rs"}, reach=False), {"food"})
+            self.assertEqual(parity.affected_harnesses(found, {}, {"crates/a/src/other.rs"}, reach=False), set())
+            template.write_text(json.dumps({"dependencies": [r"crates\a\examples\probe.rs"]}), encoding="utf-8")
+            before = template.read_bytes()
+            with mock.patch.object(parity, "changed_files", return_value={"crates/a/examples/probe.rs"}):
+                self.assertEqual(parity.changed_harnesses(found, {}, "base"), {"food"})
+            self.assertEqual(template.read_bytes(), before)  # selection does not migrate the shared record
+
+    def test_changed_harnesses_accepts_legacy_oracle_example_and_bin_paths(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)):
+            found = {name: Path(temp, "tools", f"test_{name}_parity.py")
+                     for name in ("oracle", "example", "bin", "other")}
+            records = {"oracle": {"dependencies": [r"mods\horizon\src\test\Oracle.java"]},
+                       "example": {"dependencies": [r"crates\a\examples\probe.rs"]},
+                       "bin": {"dependencies": [r"crates\a\src\bin\probe.rs"]},
+                       "other": {"dependencies": []}}
+            changed = {"mods/horizon/src/test/Oracle.java", "crates/a/examples/probe.rs", "crates/a/src/bin/probe.rs"}
+            with mock.patch.object(parity, "changed_files", return_value=changed):
+                self.assertEqual(parity.changed_harnesses(found, records, "base"),
+                                 {"oracle", "example", "bin"})
+
+    def test_changed_harnesses_unknown_dependencies_remain_conservative(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)), \
+                mock.patch.object(parity, "SHARED", Path(temp, "shared")), \
+                mock.patch.object(parity, "changed_files", return_value={"README.md"}):
+            found = {name: Path(temp, "tools", f"test_{name}_parity.py")
+                     for name in ("missing", "unknown", "empty")}
+            records = {"unknown": {"dependencies": None}, "empty": {"dependencies": []}}
+            self.assertEqual(parity.changed_harnesses(found, records, "base"), {"missing", "unknown"})
+
+    def test_traced_dependencies_are_recorded_with_forward_slashes(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.multiple(
+                parity, ROOT=Path(temp), LOCAL=Path(temp, ".local"), TARGET=Path(temp, "target")):
+            source = Path(temp, "crates/a/src/food.rs")
+            source.parent.mkdir(parents=True)
+            source.write_text("pub fn food() {}", encoding="utf-8")
+            trace = {"modules": [str(source)], "read": [], "commands": []}
+            self.assertEqual(parity.dependencies(trace), (["crates/a/src/food.rs"], []))
 
     def test_platform_specific_harnesses_are_skipped_elsewhere(self):
         config = {"linux_only": {"options": "libm"}}

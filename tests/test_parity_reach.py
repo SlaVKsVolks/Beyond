@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 from tools import parity, parity_reach
 
@@ -60,7 +61,7 @@ class ReachTests(unittest.TestCase):
                 pub fn main() { println!("{} {} {}", helper(), Thing.method(), Thing); }
             """,
         })
-        self.dependencies = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*") if path.is_file())
+        self.dependencies = sorted(path.relative_to(self.root).as_posix() for path in self.root.rglob("*") if path.is_file())
         self.dependencies.remove("crates/a/examples/probe/main.rs")  # parity.only_probes_run leaves it out
 
     def tearDown(self):
@@ -110,6 +111,18 @@ class ReachTests(unittest.TestCase):
         full = parity_reach.narrow(self.dependencies, PROBE, graph, (), {"crates/b/src/lib.rs"})
         self.assertIn("crates/a/src/display.rs", full)
         self.assertTrue(graph.results)
+
+    def test_legacy_selection_preserves_real_reach_and_unknown_probe_fallback(self):
+        found = {name: self.root / "tools" / f"test_{name}_parity.py"
+                 for name in ("canonical", "legacy", "unknown")}
+        legacy = [path.replace("/", "\\") for path in self.dependencies]
+        records = {"canonical": {"dependencies": self.dependencies, "artifacts": PROBE},
+                   "legacy": {"dependencies": legacy, "artifacts": PROBE},
+                   "unknown": {"dependencies": legacy, "artifacts": []}}
+        with mock.patch.multiple(parity, ROOT=self.root, SHARED=self.root / "shared",
+                                 STATE_DIR=self.root / "state"):
+            self.assertEqual(parity.affected_harnesses(found, records, {"crates/a/src/used.rs"}), set(found))
+            self.assertEqual(parity.affected_harnesses(found, records, {"crates/a/src/unused.rs"}), {"unknown"})
 
     def test_unknown_probes_keep_everything(self):
         self.assertEqual(set(self.narrowed(artifacts=[])), set(self.dependencies))
