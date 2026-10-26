@@ -9,10 +9,13 @@ from tools import release_train as train
 NOW = dt.datetime(2026, 10, 15, 12, 0, tzinfo=dt.timezone.utc)
 
 
-def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src/game.rs",), issues=(), author="ludovic111",
+def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src/game.rs",), issues=(), author=None,
        merged=dt.timedelta(hours=9)):
+    # Most fixtures are maintainer changes, independent of which fork runs CI.
+    if author is None:
+        author = train.REPO.split("/")[0]
     return {"number": number, "title": title, "labels": list(labels), "paths": list(paths), "issues": list(issues),
-            "author": author, "url": f"https://github.com/ludovic111/horizon/pull/{number}", "merged_at": NOW - merged}
+            "author": author, "url": f"https://github.com/{train.REPO}/pull/{number}", "merged_at": NOW - merged}
 
 
 class ReleaseTrainTests(unittest.TestCase):
@@ -231,11 +234,18 @@ class ReleaseTrainTests(unittest.TestCase):
         # GitHub's latest is a game release: whoever lands on it is sent to the launcher first (#1647).
         _, body = train.notes("game", "v0.2.50", [pr(1)], ["- Sound cuts out after an hour."])
         self.assertTrue(body.startswith('<h3>Want to play? Download the <a href="https://playhorizon.dev">Horizon launcher'))
-        self.assertIn('href="https://github.com/ludovic111/horizon/releases?q=launcher&amp;expanded=true"', body)
+        self.assertIn(f'href="https://github.com/{train.REPO}/releases?q=launcher&amp;expanded=true"', body)
         self.assertNotIn("\n", train.PLAYERS, "one line: one HTML block, which ends at the blank line after it")
         self.assertEqual(body.count("playhorizon.dev"), 1, "said once, at the top")
         _, body = train.notes("game", "v0.2.51", [], [])
         self.assertTrue(body.startswith(train.PLAYERS + "\n\nRebuilt from the latest main."))
+
+    def test_notes_excludes_the_current_repository_owner_not_other_contributors(self):
+        owner = train.REPO.split("/")[0]
+        contributor = "fixture-contributor" if owner != "fixture-contributor" else "other-contributor"
+        _, body = train.notes("game", "v0.2.50", [pr(1, author=owner), pr(2, author=contributor)], [])
+        self.assertIn(f"Thanks to @{contributor}.", body)
+        self.assertNotIn(f"@{owner}", body)
 
     def test_known_issues_are_the_bullets_of_the_file(self):
         with tempfile.TemporaryDirectory() as temp:
