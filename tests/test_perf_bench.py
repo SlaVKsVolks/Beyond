@@ -1,5 +1,9 @@
+import argparse
 import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 from tools.perf_bench import HISTOGRAM_EDGES_MS, OPTIONS, frames, rnd, summary
 
@@ -106,3 +110,129 @@ class WaitLoadedTests(unittest.TestCase):
         self.assertLess(took, 4.0)
         # Without one (the old call), the quiet start ends the wait at once.
         self.assertLess(self.run_script(idle + loading + tail), 1.6)
+
+
+class AppMetadataTests(unittest.TestCase):
+    def test_invalid_package_version_does_not_use_dependency_metadata(self) -> None:
+        from tools import perf_bench as pb
+        manifests = (
+            '[package]\nversion = ???\n[dependencies.example]\nversion = "9.9.9"\n',
+            '[package]\nname = "fixture"\n[dependencies.example]\nversion = "9.9.9"\n',
+            '[dependencies.example]\nversion = "9.9.9"\n',
+            '[package]\nversion = "0.9.3" trailing-garbage\n',
+            '[package]\nversion = ???\nversion = "0.9.3"\n',
+        )
+        for contents in manifests:
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                manifest = root / "crates/horizon-client/Cargo.toml"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(contents, encoding="utf-8")
+                marker = root / "game-ran"
+
+                def run_game(*_args: object) -> dict[str, object]:
+                    marker.write_text("started", encoding="utf-8")
+                    return ReportPersistenceTests.run_result()
+
+                args = ["perf_bench.py", "--label", "invalid", "--sizes", "1280x720",
+                        "--distances", "8", "--repeats", "1"]
+                git_result = pb.subprocess.CompletedProcess(["git"], 0, stdout="abc1234\n")
+                with (mock.patch.object(pb, "ROOT", root), mock.patch.object(pb, "WORK", root / "work"),
+                      mock.patch.object(pb.sys, "argv", args), mock.patch.object(pb, "run_horizon", side_effect=run_game),
+                      mock.patch.object(pb, "hardware", return_value={"os": "fixture", "arch": "x86_64"}),
+                      mock.patch.object(pb.os, "getloadavg", return_value=(0.0, 0.0, 0.0), create=True),
+                      mock.patch.object(pb.subprocess, "run", return_value=git_result)):
+                    with self.assertRaises(ValueError):
+                        pb.main()
+                self.assertFalse(marker.exists(), "invalid package metadata must fail before a game starts")
+
+    def test_source_tree_version_and_commit_are_preserved(self) -> None:
+        from tools import perf_bench as pb
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = root / "crates/horizon-client/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('[package]\nversion = "0.9.3"\n', encoding="utf-8")
+            git_result = pb.subprocess.CompletedProcess(["git"], 0, stdout="abc1234\n")
+            with mock.patch.object(pb, "ROOT", root), mock.patch.object(pb.subprocess, "run", return_value=git_result):
+                self.assertEqual(pb.app(argparse.Namespace(game="horizon", port_work=None)),
+                                 {"name": "horizon-client", "version": "0.9.3", "commit": "abc1234"})
+
+    def test_release_layout_has_no_invented_source_identity(self) -> None:
+        from tools import perf_bench as pb
+        with tempfile.TemporaryDirectory() as temp:
+            git_result = pb.subprocess.CompletedProcess(["git"], 0, stdout="unrelated-source-commit\n")
+            with mock.patch.object(pb, "ROOT", Path(temp)), mock.patch.object(pb.subprocess, "run", return_value=git_result):
+                try:
+                    actual = pb.app(argparse.Namespace(game="horizon", port_work=None))
+                except FileNotFoundError as error:
+                    self.fail(f"an installed build must not require source metadata: {error}")
+                self.assertEqual(actual, {"name": "horizon-client", "version": "unknown", "commit": None})
+
+    def test_source_version_is_usable_without_git_installed(self) -> None:
+        from tools import perf_bench as pb
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = root / "crates/horizon-client/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('[package]\nversion = "0.9.3"\n', encoding="utf-8")
+            with mock.patch.object(pb, "ROOT", root), mock.patch.object(pb.subprocess, "run", side_effect=FileNotFoundError("git")):
+                try:
+                    actual = pb.app(argparse.Namespace(game="horizon", port_work=None))
+                except FileNotFoundError as error:
+                    self.fail(f"a missing Git executable must not discard benchmark results: {error}")
+                self.assertEqual(actual, {"name": "horizon-client", "version": "0.9.3", "commit": None})
+
+
+class ReportPersistenceTests(unittest.TestCase):
+    @staticmethod
+    def run_result() -> dict[str, object]:
+        return {"startup": {"title_s": 1.0, "world_s": 2.0}, "memory": {},
+                "scenes": {"village": {"load_s": 3.0, "frame_ms": [10.0, 20.0]}}}
+
+    def test_release_layout_writes_completed_runs(self) -> None:
+        from tools import perf_bench as pb
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            args = ["perf_bench.py", "--label", "installed", "--sizes", "1280x720",
+                    "--distances", "8,16", "--repeats", "1"]
+            git_result = pb.subprocess.CompletedProcess(["git"], 1, stdout="")
+            with (mock.patch.object(pb, "ROOT", root), mock.patch.object(pb, "WORK", root / "work"),
+                  mock.patch.object(pb.sys, "argv", args),
+                  mock.patch.object(pb, "run_horizon", side_effect=lambda *_: self.run_result()),
+                  mock.patch.object(pb, "hardware", return_value={"os": "fixture", "arch": "x86_64"}),
+                  mock.patch.object(pb.os, "getloadavg", return_value=(0.0, 0.0, 0.0), create=True),
+                  mock.patch.object(pb.subprocess, "run", return_value=git_result)):
+                try:
+                    pb.main()
+                except FileNotFoundError as error:
+                    self.fail(f"completed runs were lost to missing metadata: {error}")
+            for distance in (8, 16):
+                saved = json.loads((root / f"benchmarks/perf/installed-rd{distance}.json").read_text())
+                self.assertEqual(saved["app"], {"name": "horizon-client", "version": "unknown", "commit": None})
+                self.assertEqual(saved["conditions"]["render_distance"], distance)
+                self.assertEqual(saved["metrics"]["startup.title_ms"]["mean"], 1000.0)
+                self.assertEqual(saved["frames"][0]["frames"], 2)
+
+    def test_fatal_metadata_error_precedes_game_execution(self) -> None:
+        from tools import perf_bench as pb
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A directory where a source file belongs is an actual I/O error, not absent metadata.
+            (root / "crates/horizon-client/Cargo.toml").mkdir(parents=True)
+            marker = root / "game-ran"
+
+            def run_game(*_args: object) -> dict[str, object]:
+                marker.write_text("started", encoding="utf-8")
+                return self.run_result()
+
+            args = ["perf_bench.py", "--label", "preflight", "--sizes", "1280x720",
+                    "--distances", "8", "--repeats", "1"]
+            git_result = pb.subprocess.CompletedProcess(["git"], 1, stdout="")
+            with (mock.patch.object(pb, "ROOT", root), mock.patch.object(pb, "WORK", root / "work"),
+                  mock.patch.object(pb.sys, "argv", args), mock.patch.object(pb, "run_horizon", side_effect=run_game),
+                  mock.patch.object(pb.os, "getloadavg", return_value=(0.0, 0.0, 0.0), create=True),
+                  mock.patch.object(pb.subprocess, "run", return_value=git_result)):
+                with self.assertRaises(OSError):
+                    pb.main()
+            self.assertFalse(marker.exists(), "fatal metadata must fail before starting a game")

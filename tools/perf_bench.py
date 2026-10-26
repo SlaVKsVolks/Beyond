@@ -835,6 +835,8 @@ def main():
         table(args.table)
         return
     args.label = args.label or f"{args.game}-{platform.node().split('.')[0]}"
+    # Discover fallible metadata before running games, never after collecting their results.
+    application = app(args)
     WORK.mkdir(parents=True, exist_ok=True)
     run = {"horizon": run_horizon, "neoforge": run_neoforge}.get(args.game, run_vanilla)
     label = args.label
@@ -849,16 +851,34 @@ def main():
                 runs.append(result)
             out = ROOT / "benchmarks/perf" / f"{args.label}-rd{d}.json"
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(report(args, d, runs, app(args)), indent=1) + "\n")
+            out.write_text(json.dumps(report(args, d, runs, application), indent=1) + "\n")
             print(out)
 
 
-def app(args):
+def app(args: argparse.Namespace) -> dict[str, object]:
     if args.game == "horizon":
-        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                                capture_output=True, text=True).stdout.strip() or None
-        manifest = (ROOT / "crates/horizon-client/Cargo.toml").read_text()
-        version = next(l.split('"')[1] for l in manifest.splitlines() if l.startswith("version"))
+        commit: str | None = None
+        try:
+            manifest = (ROOT / "crates/horizon-client/Cargo.toml").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Installed releases do not ship the source tree. Do not invent their identity.
+            version = "unknown"
+        else:
+            package = re.search(r'(?ms)^[ \t]*\[package\][ \t]*(?:#[^\n]*)?\n(.*?)(?=^[ \t]*\[|\Z)', manifest)
+            versions = [line for line in package.group(1).splitlines()
+                        if re.match(r'[ \t]*version[ \t]*=', line)] if package else []
+            found = re.fullmatch(r'[ \t]*version[ \t]*=[ \t]*"([^"\r\n]+)"[ \t]*(?:#.*)?', versions[0]) if len(versions) == 1 else None
+            if not found:
+                raise ValueError("crates/horizon-client/Cargo.toml has no literal package version")
+            version = found.group(1)
+            try:
+                result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                                        capture_output=True, text=True)
+            except FileNotFoundError:
+                pass  # A source archive need not have Git installed.
+            else:
+                if result.returncode == 0:
+                    commit = result.stdout.strip() or None
         mods = [{"name": p.parent.name, "version": "carried"} for p in dev_mods(args)]
         return {"name": "horizon-client", "version": version, "commit": commit, **({"mods": mods} if mods else {})}
     if args.game == "neoforge":
