@@ -1930,6 +1930,7 @@ impl Hub {
                 | S::PlayerLoaded(_)
                 | S::ChunkBatchReceived(_)
                 | S::ClientInformation(_)
+                | S::RecipeBookChangeSettings(_)
                 | S::ClientTickEnd(_)
                 | S::KeepAlive(_) => false,
                 S::MovePlayerPos(p) => self.moved_far(i, [p.x, p.y, p.z]),
@@ -1996,6 +1997,14 @@ impl Hub {
                     g.max_unacknowledged = 10;
                 }
                 S::ClientTickEnd(_) => self.guests[i].position_this_tick = false,
+                S::RecipeBookChangeSettings(p) => {
+                    if let Some(book) = crate::recipe_book::BookType::ALL.get(p.book_type as usize)
+                    {
+                        let settings = &mut self.guests[i].recipe_book;
+                        settings.open[book.index()] = p.open;
+                        settings.filtering[book.index()] = p.filtering;
+                    }
+                }
                 S::ClientInformation(info) => {
                     let g = &mut self.guests[i];
                     g.view_distance =
@@ -2580,6 +2589,170 @@ fn shared_flags(sneaking: bool, sprinting: bool, gliding: bool) -> i8 {
 mod tests {
     use super::*;
     use crate::fast_hash::FxHashSet;
+
+    // A missing recipe settings handler leaves the requesting guest unchanged.
+    #[test]
+    fn recipe_settings_inbox_updates_only_requesting_guest() {
+        use crate::lan::{Joined, NetConfig, PlayerSender};
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use horizon_world::registry::BlockStateId;
+        use std::sync::atomic::{AtomicI32, AtomicUsize};
+
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                if let Err(error) = std::fs::remove_dir_all(&self.0) {
+                    eprintln!("fixture cleanup: {error}");
+                    assert!(std::thread::panicking(), "fixture cleanup: {error}");
+                }
+            }
+        }
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = loop {
+            let candidate = std::env::temp_dir().join(format!(
+                "horizon-recipe-settings-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break Fixture(candidate),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("fixture creation: {e}"),
+            }
+        };
+        std::fs::write(dir.0.join("registries.json"), "{}").unwrap();
+        let sync = Arc::new(SyncData::load(&dir.0).unwrap());
+        let encoder = ChunkEncoder::new(std::iter::empty(), &sync.builtin, &[], &[]);
+        let mut net = NetConfig::lan(0, String::new(), 2);
+        net.listen = false;
+        net.announce = false;
+        let lan = Lan::start_with(sync.clone(), net).unwrap();
+        assert!(!lan.listening());
+        assert_eq!(lan.port, 0);
+        let config = HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            seed: 0,
+            max_players: 2,
+            dedicated: false,
+            integrated: true,
+        };
+        let mut hub = Hub::new(lan, sync, encoder, config);
+        let guest = |id| {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            Guest::new(
+                Joined {
+                    conn: id,
+                    uuid: u128::from(id),
+                    name: format!("player{id}"),
+                    properties: vec![],
+                    info: ClientInformation::new(10),
+                    brand: String::new(),
+                    sender: PlayerSender::new(tx, Arc::new(AtomicUsize::new(0))),
+                    latency: Arc::new(AtomicI32::new(0)),
+                    address: "127.0.0.1:0".parse().unwrap(),
+                },
+                id as i32,
+                [0.0; 3],
+                10,
+            )
+        };
+        hub.guests.push(guest(1));
+        hub.guests.push(guest(2));
+        hub.guests[0].recipe_book.open = [false, true, false, true];
+        hub.guests[0].recipe_book.filtering = [true, false, true, false];
+        hub.guests[1].recipe_book.open = [true, false, true, false];
+        hub.guests[1].recipe_book.filtering = [false, true, false, true];
+        for (i, g) in hub.guests.iter_mut().enumerate() {
+            g.recipe_book.recipes.insert(format!("minecraft:known_{i}"));
+            g.recipe_book
+                .to_be_displayed
+                .insert(format!("minecraft:highlight_{i}"));
+        }
+        hub.ticks = 42;
+        hub.guests[0].last_action_tick = 5;
+        hub.guests[1].last_action_tick = 6;
+        let mut world = World::new(BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next_entity = 1;
+        let mut ctx = TickCtx {
+            world: &mut world,
+            host: None,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.0; 3],
+            difficulty: 0,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: (0, 0),
+            collision: None,
+            border: &border,
+        };
+        let same_settings = |actual: &crate::recipe_book::Settings,
+                             expected: &crate::recipe_book::Settings| {
+            assert_eq!(actual.open, expected.open);
+            assert_eq!(actual.filtering, expected.filtering);
+            assert_eq!(actual.recipes, expected.recipes);
+            assert_eq!(actual.to_be_displayed, expected.to_be_displayed);
+        };
+        for book in 0..4u8 {
+            for (open, filtering) in [(1, 0), (1, 1), (0, 1), (0, 0)] {
+                for player in 0..2 {
+                    let before = [
+                        hub.guests[0].recipe_book.clone(),
+                        hub.guests[1].recipe_book.clone(),
+                    ];
+                    let packet = S::decode(
+                        horizon_protocol::ids::play::serverbound::RECIPE_BOOK_CHANGE_SETTINGS,
+                        &[book, open, filtering],
+                    )
+                    .unwrap();
+                    // Repeating the same packet must be idempotent.
+                    hub.guests[player].inbox.push_back(packet.clone());
+                    hub.guests[player].inbox.push_back(packet);
+                    let mut events = Vec::new();
+                    hub.process_inbox(player, &mut ctx, &mut events);
+                    let mut expected = before[player].clone();
+                    expected.open[book as usize] = open != 0;
+                    expected.filtering[book as usize] = filtering != 0;
+                    same_settings(&hub.guests[player].recipe_book, &expected);
+                    same_settings(&hub.guests[1 - player].recipe_book, &before[1 - player]);
+                    assert_eq!(hub.guests[0].last_action_tick, 5);
+                    assert_eq!(hub.guests[1].last_action_tick, 6);
+                    assert!(events.is_empty());
+                    for i in 0..2 {
+                        crate::lan::playerdata::save(&hub.guests[i], &dir.0);
+                        assert!(crate::lan::playerdata::exists(&dir.0, hub.guests[i].uuid));
+                        let mut loaded = guest((i + 1) as u32);
+                        assert!(crate::lan::playerdata::load(&mut loaded, &dir.0));
+                        same_settings(&loaded.recipe_book, &hub.guests[i].recipe_book);
+                    }
+                }
+            }
+        }
+        for book_type in [-1, 4, i32::MAX] {
+            let before = hub.guests[0].recipe_book.clone();
+            hub.guests[0].inbox.push_back(S::RecipeBookChangeSettings(
+                horizon_protocol::packets::recipes::RecipeBookChangeSettings {
+                    book_type,
+                    open: true,
+                    filtering: true,
+                },
+            ));
+            let mut events = Vec::new();
+            hub.process_inbox(0, &mut ctx, &mut events);
+            same_settings(&hub.guests[0].recipe_book, &before);
+            assert_eq!(hub.guests[0].last_action_tick, 5);
+            assert!(events.is_empty());
+        }
+    }
 
     /// `requeue` as it was, scanning the queue for each chunk of the view.
     fn requeue_scan(

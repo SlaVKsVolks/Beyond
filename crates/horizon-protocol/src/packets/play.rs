@@ -2254,6 +2254,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ChatCommandSigned(ChatCommandSigned) = CHAT_COMMAND_SIGNED,
     ChatSessionUpdate(ChatSessionUpdate) = CHAT_SESSION_UPDATE,
     PlaceRecipe(super::recipes::PlaceRecipe) = PLACE_RECIPE,
+    RecipeBookChangeSettings(super::recipes::RecipeBookChangeSettings) = RECIPE_BOOK_CHANGE_SETTINGS,
     ChunkBatchReceived(ChunkBatchReceived) = CHUNK_BATCH_RECEIVED,
     ClientCommand(ClientCommand) = CLIENT_COMMAND,
     ClientInformation(ClientInformation) = CLIENT_INFORMATION,
@@ -2299,6 +2300,37 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
 mod tests {
     use super::*;
     use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
+
+    #[test]
+    fn recipe_settings_packets_decode_and_reject_invalid_books() {
+        let id = crate::ids::play::serverbound::RECIPE_BOOK_CHANGE_SETTINGS;
+        for book in 0..4u8 {
+            for open in 0..=1u8 {
+                for filtering in 0..=1u8 {
+                    let payload = [book, open, filtering];
+                    let packet = Serverbound::decode(id, &payload).unwrap();
+                    assert!(!matches!(packet, Serverbound::Unknown(..)));
+                    assert_eq!(packet.encode(), [47, book, open, filtering]);
+                }
+            }
+        }
+        let noncanonical = Serverbound::decode(id, &[3, 2, 255]).unwrap();
+        assert_eq!(noncanonical.encode(), [47, 3, 1, 1]);
+        for payload in [
+            &[4, 0, 0][..],
+            &[0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0],
+            &[0xff, 0xff, 0xff, 0xff, 0x07, 0, 0],
+            &[0x80],
+            &[0],
+            &[0, 1],
+            &[0, 0, 0, 0],
+        ] {
+            assert!(
+                Serverbound::decode(id, payload).is_err(),
+                "accepted {payload:?}"
+            );
+        }
+    }
 
     #[test]
     fn serverbound_abilities_carry_only_flying() {
