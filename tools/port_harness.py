@@ -96,7 +96,9 @@ def prepare_resources(root, version, store):
 def named_logs(output: str) -> str:
     """The logs horizon-prepare's errors point to ("…; see /path/export.log"): its javac errors are there."""
     text = ""
-    pattern = r"; see ((?:[A-Za-z]:[\\/]|/(?!/))[^\r\n]*?\.log)(?=$|[\s.,;:!?)\]])"
+    # The producer ends its message with the path. Do not guess where a path
+    # ends when text follows .log: a directory itself can contain ".log ".
+    pattern = r"; see ((?:[A-Za-z]:[\\/]|/(?![\\/]))[^\r\n]*\.log)\r?$"
     for name in sorted(set(re.findall(pattern, output, re.MULTILINE))):
         try:
             with Path(name).open("rb") as stream:

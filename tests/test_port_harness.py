@@ -91,7 +91,7 @@ class NamedLogTests(unittest.TestCase):
             second.write_text("second diagnostic\n", encoding="utf-8")
             unmentioned.write_text("must not appear\n", encoding="utf-8")
             output = (f"failed exporting; see {first}\nfailed again; see {first}\n"
-                      f"failed generator; see {second}. Additional prose\n"
+                      f"failed generator; see {second}\n"
                       f"failed; see {Path(tmp) / 'missing.log'}\n")
             self.assertEqual(harness.named_logs(output),
                              "Oracle.java:33: error: cannot find symbol\nsecond diagnostic\n")
@@ -104,9 +104,28 @@ class NamedLogTests(unittest.TestCase):
                      r"C:\Program Files\Horizon\export.log"]
             for name in names:
                 with self.subTest(name=name), mock.patch.object(harness, "Path", side_effect={name: log}.__getitem__):
-                    self.assertEqual(harness.named_logs(f"failed; see {name}; more details\n"), "diagnostic\n")
+                    self.assertEqual(harness.named_logs(f"failed; see {name}\n"), "diagnostic\n")
             with mock.patch.object(harness, "Path", side_effect=lambda value: log):
                 self.assertEqual(harness.named_logs("see /tmp/no-spaces.log\nfailed; see relative.log\n"), "")
+
+    def test_log_named_directory_does_not_open_unrelated_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / "work.log"
+            prefix.write_text("unrelated prefix\n", encoding="utf-8")
+            directory = Path(tmp) / "work.log backup"
+            directory.mkdir()
+            log = directory / "export.log"
+            log.write_text("actual diagnostic\n", encoding="utf-8")
+            self.assertEqual(harness.named_logs(f"failed; see {log}\n"), "actual diagnostic\n")
+
+    def test_unc_relative_and_ambiguous_trailing_text_never_open(self):
+        names = ["//server/share/export.log", r"/\server\share\export.log",
+                 r"\\server\share\export.log", r"C:relative\export.log", "relative/export.log",
+                 "/tmp/export.log; more details", "/tmp/export.log. Additional prose", "/tmp/export.log."]
+        with mock.patch.object(harness, "Path", side_effect=AssertionError("unexpected open")):
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertEqual(harness.named_logs(f"failed; see {name}\n"), "")
 
     def test_large_log_reads_only_bounded_tail_with_invalid_utf8(self):
         with tempfile.TemporaryDirectory(prefix="named logs ") as tmp:
