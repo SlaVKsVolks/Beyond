@@ -1,5 +1,9 @@
 from pathlib import Path
+import os
+import stat
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -14,6 +18,34 @@ JAVAC = """/x/mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java:4
 
 def state(**statuses):
     return {"harnesses": {name.replace("_1", "#1"): {"status": status} for name, status in statuses.items()}}
+
+
+def make_reports_alias(alias: Path, target: Path) -> None:
+    if os.name != "nt":
+        alias.symlink_to(target, target_is_directory=True)
+        return
+    # cmd's mklink is a built-in. Reject expansion and shell syntax before quoting
+    # the two owned absolute paths; list2cmdline does not escape cmd metacharacters.
+    cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+    for path in (cmd, alias, target):
+        text = str(path)
+        if not path.is_absolute() or any(ord(c) < 32 or c in '"&|<>^()%!' for c in text):
+            raise ValueError("unsafe junction fixture path")
+    command = f'"{cmd}" /d /s /c "mklink /J "{alias}" "{target}""'
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    if result.returncode:
+        raise RuntimeError(f"junction creation failed: {result.stdout!r} {result.stderr!r}")
+
+
+def remove_fixture_alias(alias: Path) -> None:
+    try:
+        if os.name == "nt":
+            alias.rmdir()
+        else:
+            alias.unlink()
+    except FileNotFoundError:
+        pass
 
 
 class ClassifyTests(unittest.TestCase):
@@ -61,18 +93,92 @@ class AssetTests(unittest.TestCase):
             self.assertEqual(harness.named_logs("error: see /nonexistent/x.log"), "")
 
     def test_the_reports_link_goes_before_horizon_prepare(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(prefix="reports fixture ") as tmp:
             root, store = Path(tmp) / "candidate", Path(tmp) / "store-reports"
-            (store / "minecraft").mkdir(parents=True)
+            store.mkdir()
+            marker = store / "marker"
+            marker.write_bytes(b"store contents")
             reports = root / ".local" / "datagen" / "out" / "reports"
             reports.parent.mkdir(parents=True)
-            reports.symlink_to(store)
+            try:
+                make_reports_alias(reports, store)
+                def stop_at_build(args, cwd, **kwargs):
+                    self.assertEqual(args[:4], ["cargo", "build", "--release", "-p"])
+                    self.assertEqual(cwd, root)
+                    self.assertFalse(os.path.lexists(reports))
+                    self.assertEqual(marker.read_bytes(), b"store contents")
+                    raise RuntimeError("stopped before external build")
+
+                with mock.patch.object(harness.port_regen, "run", side_effect=stop_at_build):
+                    result = harness.prepare_resources(root, "fixture", store)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("stopped before external build", result["error"])
+            finally:
+                remove_fixture_alias(reports)
+
+    def test_owned_directory_and_missing_reports_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / ".local" / "datagen" / "out" / "reports"
             harness.own_reports(root)
-            self.assertFalse(reports.exists() or reports.is_symlink())
-            self.assertTrue((store / "minecraft").is_dir())
-            reports.mkdir()  # its own reports, from an earlier horizon-prepare, stay
+            reports.mkdir(parents=True)
+            marker = reports / "marker"
+            marker.write_bytes(b"candidate contents")
             harness.own_reports(root)
-            self.assertTrue(reports.is_dir())
+            self.assertEqual(marker.read_bytes(), b"candidate contents")
+            marker.unlink()
+            reports.rmdir()
+            reports.write_bytes(b"candidate file")
+            harness.own_reports(root)
+            self.assertEqual(reports.read_bytes(), b"candidate file")
+
+    def test_broken_reports_alias_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, target = Path(tmp) / "candidate", Path(tmp) / "target"
+            target.mkdir()
+            reports = root / ".local" / "datagen" / "out" / "reports"
+            reports.parent.mkdir(parents=True)
+            try:
+                make_reports_alias(reports, target)
+                target.rmdir()
+                harness.own_reports(root)
+                self.assertFalse(os.path.lexists(reports))
+            finally:
+                remove_fixture_alias(reports)
+
+    def test_unrecognized_reparse_points_and_volume_mounts_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [(0xA0000003, "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\"),
+                     (0xA0000003, r"\Device\HarddiskVolume1\other"),
+                     (0xA0000042, r"C:\target")]
+            for tag, target in cases:
+                with self.subTest(tag=tag, target=target):
+                    info = SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400, st_reparse_tag=tag)
+                    with mock.patch.object(Path, "lstat", return_value=info), \
+                         mock.patch.object(Path, "readlink", return_value=Path(target)), \
+                         mock.patch.object(Path, "rmdir", side_effect=AssertionError("removed")), \
+                         mock.patch.object(Path, "unlink", side_effect=AssertionError("removed")):
+                        with self.assertRaises(OSError):
+                            harness.own_reports(root)
+
+    def test_reports_metadata_io_error_propagates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(Path, "lstat", side_effect=PermissionError("denied")):
+                with self.assertRaises(PermissionError):
+                    harness.own_reports(Path(tmp))
+
+    def test_windows_symlink_removal_uses_the_matching_node_operation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for attributes, operation in ((0x410, "rmdir"), (0x400, "unlink")):
+                with self.subTest(operation=operation):
+                    info = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=attributes,
+                                           st_reparse_tag=0xA000000C)
+                    with mock.patch.object(Path, "lstat", return_value=info), \
+                         mock.patch.object(Path, "rmdir") as rmdir, mock.patch.object(Path, "unlink") as unlink:
+                        harness.own_reports(Path(tmp))
+                    self.assertEqual(rmdir.call_count, int(operation == "rmdir"))
+                    self.assertEqual(unlink.call_count, int(operation == "unlink"))
 
     def test_sounds_and_panorama_only(self):
         self.assertTrue(harness.wanted_asset("minecraft/sounds.json"))

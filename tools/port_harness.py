@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 
 try:
@@ -57,12 +58,40 @@ def launcher_assets(tree, manifest, jobs=8):
     return len(hashes)
 
 
-def own_reports(root):
+# Windows IO_REPARSE_TAG_MOUNT_POINT; not exposed by stat on every supported Python.
+_MOUNT_POINT_TAG = 0xA0000003
+_SYMLINK_TAG = 0xA000000C
+_REPARSE_POINT = 0x400
+_DIRECTORY_ATTRIBUTE = 0x10
+
+
+def own_reports(root: Path) -> None:
     """Replace the candidate's link to the store's data generator reports (regen reads them) by nothing:
     horizon-prepare runs the data generator itself, and it must write into the candidate, not through the link
     into the version store (the generator also deletes the link as stale)."""
     reports = root / ".local" / "datagen" / "out" / "reports"
-    if reports.is_symlink():
+    try:
+        info = reports.lstat()
+    except FileNotFoundError:
+        return
+    attributes = getattr(info, "st_file_attributes", 0)
+    if attributes & _REPARSE_POINT:
+        tag = getattr(info, "st_reparse_tag", None)
+        if tag == _MOUNT_POINT_TAG:
+            target = str(reports.readlink())
+            # Junctions to drive paths are understood; volume mounts and other
+            # device namespaces must never be detached by this consumer.
+            if not re.match(r"^(?:\\\\\?\\)?[A-Za-z]:\\", target):
+                raise OSError(f"unsupported reports mount target: {target}")
+            reports.rmdir()
+        elif tag == _SYMLINK_TAG:
+            if attributes & _DIRECTORY_ATTRIBUTE:
+                reports.rmdir()
+            else:
+                reports.unlink()
+        else:
+            raise OSError(f"unsupported reports reparse tag: {tag!r}")
+    elif stat.S_ISLNK(info.st_mode):
         reports.unlink()
 
 
