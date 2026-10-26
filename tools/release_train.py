@@ -344,10 +344,20 @@ def bullet(pr):
     return f"- {title} (#{pr['number']}{issues})"
 
 
-def known_issues(path=ROOT / "docs" / "known-issues.md"):
+def known_issues(path: Path = ROOT / "docs" / "known-issues.md") -> list[str]:
     if not path.exists():
         return []
-    return [line.rstrip() for line in path.read_text().splitlines() if line.startswith("- ")]
+    issues: list[str] = []
+    in_bullet = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("- "):
+            issues.append(line.rstrip())
+            in_bullet = True
+        elif in_bullet and line.startswith((" ", "\t")) and line.strip():
+            issues[-1] += " " + line.strip()
+        else:
+            in_bullet = False
+    return issues
 
 
 def line_intro(kind, version, previous):
@@ -392,7 +402,7 @@ def notes(kind, version, prs, issues, previous=None):
         parts.append("### Known issues\n" + "\n".join(issues))
     contributors = sorted({pr["author"] for pr in shown if pr["author"] and pr["author"] != REPO.split("/")[0]})
     if contributors:
-        parts.append("Thanks to " + ", ".join(f"@{name}" for name in contributors) + ".")
+        parts.append("### Contributors\nThanks to " + ", ".join(f"@{name}" for name in contributors) + ".")
     if kind == "launcher":
         parts.append(LAUNCHER_FOOTER)
     parts.append(DISCLAIMER)
