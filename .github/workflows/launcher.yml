@@ -55,6 +55,8 @@ env:
 
 jobs:
   decide:
+    # Fork integration is validation-only; publishing needs separate authorization.
+    if: github.repository == 'ludovic111/horizon'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

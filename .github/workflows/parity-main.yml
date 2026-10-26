@@ -23,6 +23,7 @@ env:
 
 jobs:
   parity-main:
+    if: github.repository == 'ludovic111/horizon'
     # A Mac mini runner of its own (ludovics-mac-mini-2 holds only this label since 2026-10-26): behind PR parity jobs
     # this run waited 2 h while every merge replaced the pending one, and on the release runner a release then waited
     # behind the next run. PR parity jobs have ludovics-mac-mini and the desktop. Not the desktop: a job slowed down

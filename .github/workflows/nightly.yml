@@ -29,6 +29,7 @@ env:
 
 jobs:
   audit:
+    if: github.repository == 'ludovic111/horizon'
     # The Mac mini's runners only: the audit compares with the previous one, so it stays on one platform.
     runs-on: [self-hosted, horizon-game, macOS]
     timeout-minutes: 240  # every harness (~80 min) plus lan_integration (~40 min an attempt under load, retried)
