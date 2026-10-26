@@ -93,13 +93,19 @@ def prepare_resources(root, version, store):
                 "compile_errors": port_regen.compile_errors(output + named_logs(output))}
 
 
-def named_logs(output):
+def named_logs(output: str) -> str:
     """The logs horizon-prepare's errors point to ("…; see /path/export.log"): its javac errors are there."""
     text = ""
-    for name in sorted(set(re.findall(r"see (/\S+\.log)", output))):
-        path = Path(name)
-        if path.is_file():
-            text += path.read_text(errors="replace")[-(1 << 20):]
+    pattern = r"; see ((?:[A-Za-z]:[\\/]|/(?!/))[^\r\n]*?\.log)(?=$|[\s.,;:!?)\]])"
+    for name in sorted(set(re.findall(pattern, output, re.MULTILINE))):
+        try:
+            with Path(name).open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - (1 << 20)))
+                tail = stream.read(1 << 20).decode("utf-8", errors="replace")
+                text += tail.replace("\r\n", "\n").replace("\r", "\n")
+        except FileNotFoundError:
+            continue
     return text
 
 
