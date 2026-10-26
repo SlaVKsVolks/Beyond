@@ -21,7 +21,7 @@ path of the diff. Never decompiled code: `assert_no_code` refuses a body with a 
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import subprocess
 import tempfile
@@ -42,6 +42,15 @@ CODE = re.compile(r"^\s*(?:(?:public|private|protected|static|final|abstract)\s+
 # Inside backticks: names, JVM descriptors (`m(Lx/Y;I)V`, no spaces) and javac's one-line errors, never braces,
 # statements or assignments.
 QUOTED_CODE = re.compile(r"[{}]|;\s+\S|\s=\s|\breturn\s|\bnew\s+[A-Z]")
+
+
+def _display_store_path(path: PurePath) -> str:
+    """Display a lexical home path with a tilde and portable separators."""
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return path.as_posix()
+    return f"~/{relative.as_posix()}" if relative.parts else "~"
 
 
 def published(item):
@@ -115,7 +124,7 @@ def body(item, report, diff, store_path, limit=25):
                   for c, counts in sorted(details["items"].items(), key=lambda kv: -sum(kv[1].values()))[:limit]]
     if item["kind"] == "facts":
         lines += [f"- {key}: {a} → {b}" for key, (a, b) in details.items()]
-    where = str(store_path).replace(str(Path.home()), "~")
+    where = _display_store_path(store_path)
     lines += ["", f"The full diff stays on the maintainer's machine (`{where}`), with the vanilla files it was built "
               "from: they are never published.", END]
     text = "\n".join(lines) + "\n"

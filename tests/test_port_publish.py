@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import unittest
 from unittest import mock
 
@@ -41,6 +41,26 @@ class PublishTests(unittest.TestCase):
         self.assertIn("fields added: `exhaustionLevel F`", text)
         self.assertIn("`~/code/horizon-parity/versions/diff-26.3-26.4`", text)
         self.assertTrue(text.startswith(publish.START) and text.rstrip().endswith(publish.END))
+
+    def test_body_displays_only_a_lexical_home_as_tilde(self):
+        cases = [
+            (PurePosixPath('/home/alice'), PurePosixPath('/home/alice'), '~'),
+            (PurePosixPath('/home/alice'), PurePosixPath('/home/alice/code/diff'), '~/code/diff'),
+            (PurePosixPath('/home/alice'), PurePosixPath('/home/alice2/diff'), '/home/alice2/diff'),
+            (PurePosixPath('/home/alice'), PurePosixPath('/home/alice/home/alice/diff'),
+             '~/home/alice/diff'),
+            (PurePosixPath('/home/alice'), PurePosixPath('/var/home/alice/diff'), '/var/home/alice/diff'),
+            (PureWindowsPath('C:/Users/Alice'), PureWindowsPath('C:/Users/Alice'), '~'),
+            (PureWindowsPath('C:/Users/Alice'), PureWindowsPath('C:/Users/Alice/code/diff'), '~/code/diff'),
+            (PureWindowsPath('C:/Users/Alice'), PureWindowsPath('C:/Users/Alice2/diff'), 'C:/Users/Alice2/diff'),
+            (PureWindowsPath('C:/Users/Alice'), PureWindowsPath('C:/Users/Alice/Users/Alice/diff'),
+             '~/Users/Alice/diff'),
+            (PureWindowsPath('C:/Users/Alice'), PureWindowsPath('D:/Users/Alice/diff'), 'D:/Users/Alice/diff'),
+        ]
+        for home, location, expected in cases:
+            with self.subTest(home=home, location=location), mock.patch.object(publish.Path, 'home', return_value=home):
+                text = publish.body(items()[3], REPORT, DIFF, location)
+                self.assertIn(f"The full diff stays on the maintainer's machine (`{expected}`)", text)
 
     def test_refuses_code(self):
         for line in ["```java\nint x = 1;\n```", "    return this.foodLevel;", "public void tick(Player player) {",
