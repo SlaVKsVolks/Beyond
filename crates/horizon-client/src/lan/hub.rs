@@ -2728,10 +2728,16 @@ mod tests {
                     assert_eq!(hub.guests[1].last_action_tick, 6);
                     assert!(events.is_empty());
                     for i in 0..2 {
-                        crate::lan::playerdata::save(&hub.guests[i], &dir.0);
-                        assert!(crate::lan::playerdata::exists(&dir.0, hub.guests[i].uuid));
+                        let world = dir
+                            .0
+                            .join(format!("save-{book}-{open}-{filtering}-{player}-{i}"));
+                        std::fs::create_dir(&world).unwrap();
+                        let file = crate::lan::playerdata::path(&world, hub.guests[i].uuid);
+                        assert!(!file.exists());
+                        crate::lan::playerdata::save(&hub.guests[i], &world);
+                        assert!(file.is_file());
                         let mut loaded = guest((i + 1) as u32);
-                        assert!(crate::lan::playerdata::load(&mut loaded, &dir.0));
+                        assert!(crate::lan::playerdata::load(&mut loaded, &world));
                         same_settings(&loaded.recipe_book, &hub.guests[i].recipe_book);
                     }
                 }
