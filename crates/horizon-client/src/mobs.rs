@@ -1854,8 +1854,14 @@ impl Mob {
     }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
-            e.1 = e.1.max(ticks);
-            e.2 = e.2.max(amplifier);
+            // Stronger applications replace the active effect; weaker ones
+            // are not stored for later restoration.
+            if amplifier > e.2 {
+                e.1 = ticks;
+                e.2 = amplifier;
+            } else if amplifier == e.2 && e.1 != -1 && (ticks == -1 || e.1 < ticks) {
+                e.1 = ticks;
+            }
         } else {
             self.extra.effects.push((effect, ticks, amplifier));
         }
@@ -2670,5 +2676,42 @@ mod push_tests {
             let after = t.elapsed().as_secs_f64() * 1e3;
             println!("{n} mobs pushing each other: {before:.3} ms -> {after:.3} ms");
         }
+    }
+}
+
+#[cfg(test)]
+mod phase7_effect_merge_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    #[test]
+    fn phase7_stronger_short_effect_replaces_both_fields_and_preserves_other_effects() {
+        let mut mob = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        mob.add_effect("minecraft:speed", 200, 0);
+        mob.add_effect("minecraft:wither", 80, 1);
+        mob.add_effect("minecraft:speed", 20, 2);
+        assert_eq!(
+            mob.extra.effects,
+            vec![("minecraft:speed", 20, 2), ("minecraft:wither", 80, 1)]
+        );
+        mob.add_effect("minecraft:speed", 500, 1);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", 20, 2));
+    }
+
+    #[test]
+    fn phase7_equal_effect_only_extends_and_infinity_is_longest() {
+        let mut mob = Mob::new(2, kind(), Vec3::ZERO, 0.0);
+        mob.add_effect("minecraft:speed", 100, 1);
+        mob.add_effect("minecraft:speed", 20, 1);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", 100, 1));
+        mob.add_effect("minecraft:speed", 200, 1);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", 200, 1));
+        mob.add_effect("minecraft:speed", -1, 1);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", -1, 1));
+        mob.add_effect("minecraft:speed", 500, 1);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", -1, 1));
+        mob.add_effect("minecraft:speed", 3, 2);
+        assert_eq!(mob.extra.effects[0], ("minecraft:speed", 3, 2));
     }
 }

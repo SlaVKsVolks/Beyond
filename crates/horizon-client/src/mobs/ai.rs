@@ -1450,26 +1450,36 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
 fn tick_effects(m: &mut Mob) {
     let mut effects = std::mem::take(&mut m.extra.effects);
     for (effect, ticks, amp) in &mut effects {
-        let interval = |base: i32| (base >> (*amp).max(0)).max(1);
+        let interval = |base: i32| base.wrapping_shr((*amp).max(0) as u32).max(1);
+        let infinite = *ticks == -1;
+        let count = if infinite {
+            i64::from(m.age)
+        } else {
+            i64::from(*ticks)
+        };
         match *effect {
             "minecraft:poison"
-                if *ticks % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
+                if count % i64::from(interval(25)) == 0
+                    && !m.kind.flags.undead
+                    && m.health > 1.0 =>
             {
                 m.damage(1.0, Damage::of(DamageKind::Magic));
             }
-            "minecraft:wither" if *ticks % interval(40) == 0 => {
+            "minecraft:wither" if count % i64::from(interval(40)) == 0 => {
                 m.damage(1.0, Damage::of(DamageKind::Magic));
             }
             "minecraft:regeneration"
-                if *ticks % interval(50) == 0 && !m.kind.flags.undead && m.alive() =>
+                if count % i64::from(interval(50)) == 0 && !m.kind.flags.undead && m.alive() =>
             {
                 m.health = (m.health + 1.0).min(m.attrs.max_health);
             }
             _ => {}
         }
-        *ticks -= 1;
+        if !infinite {
+            *ticks -= 1;
+        }
     }
-    effects.retain(|e| e.1 > 0);
+    effects.retain(|e| e.1 > 0 || e.1 == -1);
     m.extra.effects = effects;
 }
 
@@ -1627,6 +1637,102 @@ mod despawn_tests {
         }
         for s in [Species::Zombie, Species::ZombieVillager, Species::Pillager] {
             assert!(!never_removed_when_far(s), "{s:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase7_effect_tick_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn mob() -> Mob {
+        Mob::new(3, kind(), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn phase7_infinite_effects_persist_and_use_age_for_cadence() {
+        for (effect, due_age, start, expected) in [
+            ("minecraft:poison", 25, 8.0, 7.0),
+            ("minecraft:wither", 40, 8.0, 7.0),
+            ("minecraft:regeneration", 50, 8.0, 9.0),
+            ("minecraft:speed", 50, 8.0, 8.0),
+        ] {
+            let mut m = mob();
+            m.health = start;
+            m.add_effect(effect, -1, 0);
+            m.age = due_age - 1;
+            tick_effects(&mut m);
+            assert_eq!(m.health, start, "{effect} non-due");
+            assert_eq!(m.extra.effects, vec![(effect, -1, 0)]);
+            m.age = due_age;
+            tick_effects(&mut m);
+            assert_eq!(m.health, expected, "{effect} due");
+            assert_eq!(m.extra.effects, vec![(effect, -1, 0)]);
+        }
+    }
+
+    #[test]
+    fn phase7_finite_effects_tick_by_duration_and_expire() {
+        let mut m = mob();
+        m.health = 8.0;
+        m.age = 1;
+        m.add_effect("minecraft:regeneration", 50, 0);
+        tick_effects(&mut m);
+        assert_eq!(m.health, 9.0);
+        assert_eq!(m.extra.effects[0].1, 49);
+        m.extra.effects[0].1 = 1;
+        tick_effects(&mut m);
+        assert!(m.extra.effects.is_empty());
+        assert_eq!(m.health, 9.0);
+    }
+
+    #[test]
+    fn phase7_periodic_effect_health_guards() {
+        let mut m = mob();
+        m.health = 1.0;
+        m.age = 25;
+        m.add_effect("minecraft:poison", -1, 0);
+        tick_effects(&mut m);
+        assert_eq!(m.health, 1.0);
+        let mut undead_kind = kind();
+        Arc::make_mut(&mut undead_kind).flags.undead = true;
+        let mut undead = Mob::new(4, undead_kind, Vec3::ZERO, 0.0);
+        undead.health = 5.0;
+        undead.age = 50;
+        undead.add_effect("minecraft:poison", -1, 0);
+        undead.add_effect("minecraft:regeneration", -1, 0);
+        tick_effects(&mut undead);
+        assert_eq!(undead.health, 5.0);
+        let mut dead = mob();
+        dead.health = 0.0;
+        dead.age = 50;
+        dead.add_effect("minecraft:regeneration", -1, 0);
+        tick_effects(&mut dead);
+        assert_eq!(dead.health, 0.0);
+    }
+
+    #[test]
+    fn phase7_infinite_cadence_uses_full_unsigned_age() {
+        let mut m = mob();
+        m.health = 8.0;
+        m.age = 2_147_483_650;
+        m.add_effect("minecraft:poison", -1, 0);
+        tick_effects(&mut m);
+        assert_eq!(m.health, 7.0);
+        assert_eq!(m.extra.effects[0].1, -1);
+    }
+
+    #[test]
+    fn phase7_valid_amplifiers_use_masked_shift_without_panic() {
+        for (amp, expected) in [(-1, 8.0), (0, 8.0), (31, 9.0), (32, 8.0), (255, 9.0)] {
+            let mut m = mob();
+            m.health = 8.0;
+            m.add_effect("minecraft:regeneration", 49, amp);
+            tick_effects(&mut m);
+            assert_eq!(m.health, expected, "amplifier {amp}");
         }
     }
 }
