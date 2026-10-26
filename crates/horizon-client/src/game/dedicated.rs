@@ -24,6 +24,7 @@ use horizon_client::{
 use horizon_protocol::text::translatable;
 use horizon_world::nbt::{JavaString, Tag};
 use std::{
+    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, mpsc},
     time::{Duration, Instant},
@@ -89,7 +90,9 @@ fn log_from(thread: &str, level: &str, message: &str) {
         }
     });
     // Log4j's %d{HH:mm:ss}: the local time, as in logs/latest.log.
-    println!(
+    // The launcher can close its stdout pipe while the server keeps running.
+    let _ = writeln!(
+        std::io::stdout().lock(),
         "[{}] [{thread}/{level}]: {message}",
         chrono::Local::now().format("%H:%M:%S")
     );
@@ -1307,4 +1310,172 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
     let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
     Some((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capture_log, log, log_from};
+    use std::{
+        fs,
+        io::{self, BufRead, BufReader, Read, Write},
+        path::PathBuf,
+        process::{Child, Command, Stdio},
+        sync::mpsc,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    const LOGIN: &str = "Player[/127.0.0.1:0] logged in with entity id 2 at (0.5, 115.0, 0.5)";
+    const WARNING: &str = "Authentication warning";
+    const READY: &str = "horizon-console-log-ready\n";
+    const CHILD_HOME: &str = "HORIZON_TEST_CONSOLE_LOG_HOME";
+    const TIMEOUT: Duration = Duration::from_secs(20);
+
+    struct TestHome(PathBuf);
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            if let Err(error) = fs::remove_dir_all(&self.0) {
+                eprintln!("could not remove test home {}: {error}", self.0.display());
+            }
+        }
+    }
+
+    struct TestChild(Child);
+
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            // Also reap on failed assertions or a startup/exit timeout.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn assert_log_lines(text: &str) {
+        let expected = [
+            format!("] [Server thread/INFO]: {LOGIN}"),
+            format!("] [User Authenticator #1/WARN]: {WARNING}"),
+        ];
+        assert_eq!(text.lines().count(), expected.len());
+        for (line, suffix) in text.lines().zip(expected) {
+            let time = line.get(1..9).expect("console timestamp");
+            assert!(line.starts_with('['));
+            assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M:%S").is_ok());
+            assert_eq!(&line[9..], suffix);
+        }
+    }
+
+    #[test]
+    fn console_logging_survives_closed_stdout() {
+        if let Some(home) = std::env::var_os(CHILD_HOME) {
+            horizon_client::logging::init(std::path::Path::new(&home), "Server thread");
+            // Let the parent close the real pipe only after libtest's startup output.
+            io::stdout().write_all(READY.as_bytes()).unwrap();
+            io::stdout().flush().unwrap();
+            io::stdin().read_exact(&mut [0]).unwrap();
+            std::thread::Builder::new()
+                .name("Server thread".into())
+                .spawn(|| {
+                    let captured = capture_log(|| {
+                        log("INFO", LOGIN);
+                        log_from("User Authenticator #1", "WARN", WARNING);
+                    });
+                    assert_eq!(captured, [LOGIN, WARNING]);
+                    horizon_client::logging::flush();
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            // Libtest's final status also writes to stdout; only the logger is under test.
+            std::process::exit(0);
+        }
+
+        for closed_stdout in [false, true] {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let home = TestHome(std::env::temp_dir().join(format!(
+                "horizon-console-log-test-{}-{unique}",
+                std::process::id()
+            )));
+            fs::create_dir(&home.0).unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            // A regression subprocess must not create a console window on Windows.
+            #[cfg(windows)]
+            std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+            let mut child = TestChild(
+                command
+                    .args([
+                        "--exact",
+                        "game::dedicated::tests::console_logging_survives_closed_stdout",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_HOME, &home.0)
+                    .env("HORIZON_HOME", &home.0)
+                    .env("HORIZON_LAUNCHER_HOME", home.0.join("launcher"))
+                    .env("XDG_DATA_HOME", home.0.join("data"))
+                    .env("XDG_CONFIG_HOME", home.0.join("config"))
+                    .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                    .env("HORIZON_NO_AUDIO", "1")
+                    .env("HORIZON_TELEMETRY_URL", "off")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let stdout = child.0.stdout.take().unwrap();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut stdout = BufReader::new(stdout);
+                let result = (|| {
+                    loop {
+                        let mut line = String::new();
+                        if stdout.read_line(&mut line)? == 0 {
+                            return Err(io::Error::other("child exited before ready"));
+                        }
+                        if line.ends_with(READY) {
+                            return Ok(stdout);
+                        }
+                    }
+                })();
+                let _ = ready_tx.send(result);
+            });
+            let stdout = ready_rx
+                .recv_timeout(TIMEOUT)
+                .expect("child startup timed out")
+                .expect("child was not ready");
+            let mut stdout = if closed_stdout {
+                drop(stdout); // No reader remains: the next console write gets EPIPE.
+                None
+            } else {
+                Some(stdout)
+            };
+            child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+            let deadline = Instant::now() + TIMEOUT;
+            let status = loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(Instant::now() < deadline, "child logging timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let mut stderr = String::new();
+            child
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            assert!(status.success(), "closed_stdout={closed_stdout}: {stderr}");
+            if let Some(stdout) = stdout.as_mut() {
+                let mut text = String::new();
+                stdout.read_to_string(&mut text).unwrap();
+                assert_log_lines(&text);
+            }
+            assert_log_lines(&fs::read_to_string(home.0.join("logs/latest.log")).unwrap());
+            drop(child);
+        }
+    }
 }
