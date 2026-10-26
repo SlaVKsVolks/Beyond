@@ -323,26 +323,67 @@ const QUIET_MESHES_PER_S: f64 = 100.0;
 /// happened (`tools/perf_bench.py`'s `wait_loaded`). With `status.streaming`, the sections are
 /// drawn once no stage has held work for half a second: blocks changing after the load (fluids
 /// settling, random ticks) only remesh in bursts. Without it, meshing has to go quiet.
+/// A quiet start after teleport is not a loaded scene: require enough resident terrain and
+/// count progress, or the five-second fallback for a scene that was already full.
 fn wait_loaded(control: &Control, near: impl Fn(&Value) -> bool) -> Result<Instant, String> {
-    let deadline = Instant::now() + LOAD_LIMIT;
-    let (mut last, mut changed, mut meshing) = (None, Instant::now(), Instant::now());
+    wait_loaded_with(
+        || control.status(),
+        near,
+        LOAD_LIMIT,
+        Instant::now,
+        thread::sleep,
+    )
+}
+
+fn wait_loaded_with(
+    mut status: impl FnMut() -> Value,
+    near: impl Fn(&Value) -> bool,
+    limit: Duration,
+    mut clock: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Result<Instant, String> {
+    let began = clock();
+    let deadline = began + limit;
+    let (mut last, mut changed, mut meshing) = (None, began, began);
     let mut previous: Option<(Instant, f64)> = None;
-    while Instant::now() < deadline {
-        let s = control.status();
-        let now = Instant::now();
+    let (mut first, mut moved) = (None, false);
+    while clock() < deadline {
+        let s = status();
+        let now = clock();
         let position = &s["player"]["position"];
+        let counts = (s["chunks"].as_u64(), s["generated_chunks"].as_u64());
+        let min_chunks = s["render_distance"]
+            .as_u64()
+            .filter(|distance| (2..=64).contains(distance))
+            .map(view_chunks)
+            .unwrap_or(0);
+        let meshed = s["meshed_sections"].as_f64();
         if position.is_null()
             || !near(position)
             || s["pending_chunks"] != 0
+            || s["screen"].as_str().is_none()
             || s["screen"] == "title"
+            || counts.0.is_none()
+            || counts.1.is_none()
+            || meshed.is_none()
+            || min_chunks == 0
         {
             (last, changed, previous, meshing) = (None, now, None, now);
         } else {
-            let counts = (s["chunks"].as_u64(), s["generated_chunks"].as_u64());
+            let resident = counts.0.unwrap_or(0);
+            let first = *first.get_or_insert(counts);
+            moved = moved
+                || counts != first
+                || (resident >= min_chunks && now - began > Duration::from_secs(5));
+            if !moved || resident < min_chunks {
+                (last, changed, previous, meshing) = (None, now, None, now);
+                sleep(Duration::from_millis(50));
+                continue;
+            }
             if last != Some(counts) {
                 (last, changed) = (Some(counts), now);
             }
-            let meshed = s["meshed_sections"].as_f64().unwrap_or(0.0);
+            let meshed = meshed.unwrap_or(0.0);
             let quiet = if let Some(stages) = s["streaming"].as_object() {
                 // Protos outside the view distance wait for neighbours that are never generated.
                 if stages
@@ -365,9 +406,14 @@ fn wait_loaded(control: &Control, near: impl Fn(&Value) -> bool) -> Result<Insta
                 return Ok(changed.max(meshing));
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        sleep(Duration::from_millis(50));
     }
-    Err(format!("not loaded after {} s", LOAD_LIMIT.as_secs()))
+    Err(format!("not loaded after {} s", limit.as_secs()))
+}
+
+/// 80% of the view circle, as in `tools/perf_bench.py`. The control protocol admits RD2..64.
+fn view_chunks(distance: u64) -> u64 {
+    (0.8 * std::f64::consts::PI * (distance as f64).powi(2)) as u64
 }
 
 /// Vanilla's yaw facing from `start` to `end`.
@@ -412,6 +458,219 @@ impl RssSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loaded_status(chunks: u64) -> Value {
+        serde_json::json!({
+            "player": {"position": [0, 0, 0]}, "screen": "playing",
+            "pending_chunks": 0, "render_distance": 12,
+            "chunks": chunks, "generated_chunks": chunks,
+            "meshed_sections": 1000, "streaming": {"meshing": 0, "protos": 999}
+        })
+    }
+
+    fn scripted_load(
+        mut status: impl FnMut(Duration) -> Value,
+        limit: Duration,
+    ) -> (Result<Duration, String>, Duration) {
+        let began = Instant::now();
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let result = wait_loaded_with(
+            || status(elapsed.get()),
+            |position| position[0] == 0,
+            limit,
+            || began + elapsed.get(),
+            |duration| elapsed.set(elapsed.get() + duration),
+        );
+        (result.map(|at| at - began), elapsed.get())
+    }
+
+    #[test]
+    fn empty_undersized_and_invalid_scenes_time_out() {
+        let mut cases = vec![
+            loaded_status(0),
+            loaded_status(1),
+            loaded_status(360),
+            Value::Null,
+        ];
+        for field in [
+            "chunks",
+            "generated_chunks",
+            "render_distance",
+            "meshed_sections",
+            "screen",
+        ] {
+            let mut status = loaded_status(637);
+            status[field] = Value::Null;
+            cases.push(status);
+        }
+        for distance in [0, 1, 65, u64::MAX] {
+            let mut status = loaded_status(637);
+            status["render_distance"] = distance.into();
+            cases.push(status);
+        }
+        for status in cases {
+            let (result, elapsed) = scripted_load(|_| status.clone(), Duration::from_secs(8));
+            assert!(
+                result.is_err(),
+                "invalid or incomplete status was accepted: {status}"
+            );
+            assert_eq!(elapsed, Duration::from_secs(8));
+        }
+    }
+
+    #[test]
+    fn terrain_minimum_accepts_the_view_circle_boundary_after_progress() {
+        for (distance, chunks, ready) in [
+            (2, 9, false),
+            (2, 10, true),
+            (12, 360, false),
+            (12, 361, true),
+            (32, 2572, false),
+            (32, 2573, true),
+        ] {
+            let (result, elapsed) = scripted_load(
+                |at| {
+                    let mut status = loaded_status(if at.is_zero() { 0 } else { chunks });
+                    status["render_distance"] = distance.into();
+                    status
+                },
+                Duration::from_secs(8),
+            );
+            if ready {
+                assert_eq!(result.unwrap(), Duration::from_millis(50));
+                assert_eq!(elapsed, Duration::from_millis(1050));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(elapsed, Duration::from_secs(8));
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_progress_waits_for_full_scene_and_stable_counts() {
+        let (result, elapsed) = scripted_load(
+            |at| {
+                loaded_status(if at < Duration::from_millis(1500) {
+                    0
+                } else {
+                    637
+                })
+            },
+            Duration::from_secs(4),
+        );
+        assert_eq!(result.unwrap(), Duration::from_millis(1500));
+        assert_eq!(elapsed, Duration::from_millis(2500));
+    }
+
+    #[test]
+    fn already_full_scene_uses_five_second_fallback() {
+        let (result, elapsed) = scripted_load(|_| loaded_status(637), Duration::from_secs(8));
+        assert_eq!(result.unwrap(), Duration::from_millis(5050));
+        assert_eq!(elapsed, Duration::from_millis(6050));
+    }
+
+    #[test]
+    fn generated_progress_can_finish_an_already_resident_scene() {
+        let (result, elapsed) = scripted_load(
+            |at| {
+                let mut status = loaded_status(637);
+                status["generated_chunks"] = if at < Duration::from_millis(500) {
+                    0
+                } else {
+                    1
+                }
+                .into();
+                status
+            },
+            Duration::from_secs(4),
+        );
+        assert_eq!(result.unwrap(), Duration::from_millis(500));
+        assert_eq!(elapsed, Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn pending_missing_player_wrong_position_and_title_reset_stability() {
+        for blocked in 0..4 {
+            let (result, elapsed) = scripted_load(
+                |at| {
+                    let mut status = loaded_status(if at.is_zero() { 0 } else { 637 });
+                    if (Duration::from_secs(1)..Duration::from_millis(1500)).contains(&at) {
+                        match blocked {
+                            0 => status["pending_chunks"] = 1.into(),
+                            1 => status["player"] = Value::Null,
+                            2 => status["player"]["position"][0] = 100.into(),
+                            _ => status["screen"] = "title".into(),
+                        }
+                    }
+                    status
+                },
+                Duration::from_secs(4),
+            );
+            assert_eq!(result.unwrap(), Duration::from_millis(1500));
+            assert_eq!(elapsed, Duration::from_millis(2500));
+        }
+    }
+
+    #[test]
+    fn active_stages_wait_for_half_second_quiet_but_protos_do_not() {
+        let (result, elapsed) = scripted_load(
+            |at| {
+                let mut status = loaded_status(if at.is_zero() { 0 } else { 637 });
+                if at < Duration::from_millis(1500) {
+                    status["streaming"]["meshing"] = 1.into();
+                }
+                status
+            },
+            Duration::from_secs(4),
+        );
+        assert_eq!(result.unwrap(), Duration::from_millis(1450));
+        assert_eq!(elapsed, Duration::from_millis(1950));
+    }
+
+    #[test]
+    fn legacy_status_waits_for_a_second_of_mesh_quiet() {
+        let (result, elapsed) = scripted_load(
+            |at| {
+                let mut status = loaded_status(if at.is_zero() { 0 } else { 637 });
+                status.as_object_mut().unwrap().remove("streaming");
+                status["meshed_sections"] = (at.as_millis().min(1500) as u64 * 10).into();
+                status
+            },
+            Duration::from_secs(4),
+        );
+        assert_eq!(result.unwrap(), Duration::from_millis(1500));
+        assert_eq!(elapsed, Duration::from_millis(2500));
+    }
+
+    #[test]
+    fn scene_does_not_load_during_the_quiet_start_after_teleport() {
+        // Exercise the production Control/response path without starting a game.
+        let began = Instant::now();
+        let (requests, received) = mpsc::channel::<Request>();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                for request in received {
+                    let chunks = if began.elapsed() < Duration::from_millis(1500) {
+                        0
+                    } else {
+                        637
+                    };
+                    let status = serde_json::json!({
+                        "player": {"position": [0, 0, 0]}, "screen": "playing",
+                        "pending_chunks": 0, "render_distance": 12,
+                        "chunks": chunks, "generated_chunks": chunks,
+                        "meshed_sections": 1000, "streaming": {"meshing": 0}
+                    });
+                    let _ = request.reply.send(status.to_string());
+                }
+            });
+            let loaded = wait_loaded(&Control(requests), |_| true).unwrap();
+            assert!(
+                loaded.duration_since(began) >= Duration::from_millis(1500),
+                "the initial empty scene was treated as loaded"
+            );
+        });
+    }
 
     #[test]
     fn scenarios() {
