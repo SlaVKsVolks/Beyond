@@ -17,6 +17,8 @@
 //! into every size the platforms and the website use, and packs `packaging/icons/horizon.ico`
 //! and `horizon.icns`. `docs/media/brand/README.md` lists what goes where.
 
+#![forbid(unsafe_code)]
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -24,9 +26,10 @@ use std::process::{Command, ExitCode};
 const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | tokens | icons";
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
-const ARCHIVED: [&str; 5] = [
+const ARCHIVED: [&str; 6] = [
     "tools",
     "mods/horizon/src/test/java",
+    "mods/horizon/src/bench",
     "crates/horizon-prepare",
     "research-lock.json",
     "LICENSE",
@@ -456,6 +459,54 @@ fn extract(tar: &[u8], out: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct OwnedTemp(PathBuf);
+
+    impl OwnedTemp {
+        fn new() -> Self {
+            for sequence in 0..1000 {
+                let path = std::env::temp_dir()
+                    .join(format!("xtask-package-{}-{sequence}", std::process::id()));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create {}: {error}", path.display()),
+                }
+            }
+            panic!("could not create an owned temporary directory");
+        }
+    }
+
+    impl Drop for OwnedTemp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn release_archive_contains_benchmark_driver_sources() {
+        let temp = OwnedTemp::new();
+        let out = temp.0.join("release");
+        let repo = new_folder(&out).expect("archive tracked release sources");
+        for path in [
+            "mods/horizon/src/bench/java/dev/horizonlab/bench/VanillaBench.java",
+            "mods/horizon/src/bench/java/dev/horizonlab/bench/mixin/FrameHookMixin.java",
+            "mods/horizon/src/bench/resources/fabric.mod.json",
+            "mods/horizon/src/bench/resources/horizon_bench.mixins.json",
+            "tools/perf_bench.py",
+            "tools/benchmark-deps/mods.lock.json",
+            "research-lock.json",
+        ] {
+            assert!(out.join(path).is_file(), "missing archived file: {path}");
+        }
+        for path in [".git", ".local", "crates/horizon-client/Cargo.toml"] {
+            assert!(!out.join(path).exists(), "unexpected archived path: {path}");
+        }
+        let missing = "mods/horizon/src/bench/not-a-tracked-path";
+        let error = git(&repo, &["archive", "--format=tar", "HEAD", missing]).unwrap_err();
+        assert!(error.contains("git archive"), "{error}");
+        assert!(error.contains(missing), "{error}");
+    }
 
     fn header(name: &str, mode: u32, size: usize, kind: u8) -> Vec<u8> {
         let mut h = vec![0u8; 512];

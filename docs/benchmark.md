@@ -48,6 +48,8 @@ The report is the [benchmark report format](benchmark-report.md): startup to the
 
 You need Horizon built (`cargo build --release -p horizon-client --bins`) and its resources prepared from your own copy of 26.3 (which also provides `.local/minecraft/26.3`, the vanilla client the driver starts), Java 25 with `javac`, and Python 3.10 or newer.
 
+For a packaged folder on Linux or macOS, run the comparative Python driver from that folder and add `--build .` to the Horizon command below. Prepare Horizon resources using your own Minecraft 26.3 files in the folder, including the vanilla client files at `.local/minecraft/26.3`; the package does not include them. Java 25 with `javac` and Python 3.10 or newer are still required. Without the source manifest and Git history, the report records the Horizon version as `unknown` and the commit as absent. This comparative driver is not supported on Windows: it uses Unix sockets and platform-specific hardware and load probes. The standalone Rust `horizon-client --benchmark` above is a separate path.
+
 ```sh
 python3 tools/perf_bench.py --game horizon --label horizon-mine
 python3 tools/perf_bench.py --game vanilla --label vanilla-mine
