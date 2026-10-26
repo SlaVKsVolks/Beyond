@@ -318,16 +318,17 @@ fn panic_message(info: &std::panic::PanicHookInfo) -> String {
 /// frames go. Paths inside the workspace lose the build machine's prefix.
 pub fn stack_lines(backtrace: &str, from_panic: bool) -> String {
     // The workspace as it was on the machine that built this binary (it need not exist here).
-    let manifest = env!("CARGO_MANIFEST_DIR");
+    let manifest = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
     let root = manifest
         .strip_suffix("crates/horizon-client")
-        .unwrap_or(manifest);
+        .unwrap_or(&manifest);
     let mut frames: Vec<(String, Option<String>)> = Vec::new();
     for line in backtrace.lines() {
         let line = line.trim();
         if let Some(at) = line.strip_prefix("at ") {
             if let Some(frame) = frames.last_mut() {
-                frame.1 = Some(short_path(at, root).to_owned());
+                let at = at.replace('\\', "/");
+                frame.1 = Some(short_path(&at, root).to_owned());
             }
         } else if let Some((n, name)) = line.split_once(": ")
             && n.chars().all(|c| c.is_ascii_digit())
@@ -591,6 +592,18 @@ mod tests {
         assert_eq!(
             stack_lines(&bt, true),
             "horizon_client::crash::debug_crash_tick (crates/horizon-client/src/crash.rs:359:9)\nwinit::dispatch (winit-0.30.13/src/event_loop.rs:642:56)\nmain\n"
+        );
+    }
+
+    #[test]
+    fn stack_paths_hide_windows_build_and_registry_prefixes() {
+        let manifest = env!("CARGO_MANIFEST_DIR").replace('/', "\\");
+        let bt = format!(
+            "0: horizon_client::frame\n   at {manifest}\\src\\game.rs:10:5\n1: winit::dispatch\n   at C:\\Users\\fixture\\.cargo\\registry\\src\\index.example\\winit-0.30.13\\src\\event_loop.rs:642:56\n"
+        );
+        assert_eq!(
+            stack_lines(&bt, false),
+            "horizon_client::frame (crates/horizon-client/src/game.rs:10:5)\nwinit::dispatch (winit-0.30.13/src/event_loop.rs:642:56)\n"
         );
     }
 
