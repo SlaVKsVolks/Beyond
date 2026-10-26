@@ -1475,7 +1475,8 @@ fn tick_effects(m: &mut Mob) {
             }
             _ => {}
         }
-        if !infinite {
+        // Do not turn an expired zero-duration effect into the infinite sentinel.
+        if !infinite && *ticks != 0 {
             *ticks -= 1;
         }
     }
@@ -1687,6 +1688,16 @@ mod phase7_effect_tick_tests {
         tick_effects(&mut m);
         assert!(m.extra.effects.is_empty());
         assert_eq!(m.health, 9.0);
+    }
+
+    #[test]
+    fn phase7_zero_duration_expires_without_becoming_infinite() {
+        let mut m = mob();
+        m.add_effect("minecraft:speed", 0, 0);
+        m.add_effect("minecraft:wither", 1, 0);
+        m.add_effect("minecraft:regeneration", -1, 0);
+        tick_effects(&mut m);
+        assert_eq!(m.extra.effects, vec![("minecraft:regeneration", -1, 0)]);
     }
 
     #[test]
