@@ -11,14 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::AsRawFd;
         let source = fs::File::open(from)?;
         let target = fs::File::create(to)?;
-        // SAFETY: FICLONE takes a source fd, both descriptors stay open for the call.
-        if unsafe { libc::ioctl(target.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
+        rustix::fs::ioctl_ficlone(&target, &source).map_err(Into::into)
     }
     #[cfg(target_os = "macos")]
     {
@@ -176,7 +171,7 @@ mod tests {
                 .unwrap();
                 true
             }
-            Err(error) if matches!(error.raw_os_error(), Some(code) if code == libc::EOPNOTSUPP || code == libc::ENOTTY) =>
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::OPNOTSUPP.raw_os_error() || code == rustix::io::Errno::NOTTY.raw_os_error()) =>
             {
                 writeln!(io::stderr().lock(),
                     "DIRECT_FICLONE_UNSUPPORTED: errno={:?}, {error}; positive reflink proof unavailable",
