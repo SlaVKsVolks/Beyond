@@ -239,6 +239,151 @@ struct CheckedOutput {
     stdout: String,
     tree: ProcessTree,
     root: PathBuf,
+    layout: Option<OutputLayout>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OutputKind {
+    UnifiedTarget,
+    SplitTargetBuild,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OutputStamp {
+    path: PathBuf,
+    id: file_id::FileId,
+    bytes: u64,
+    modified: SystemTime,
+    hash: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OutputLayout {
+    kind: OutputKind,
+    roots: Vec<OutputStamp>,
+    locks: Vec<OutputStamp>,
+}
+
+impl OutputLayout {
+    // Only this fresh, successful invocation's output is observed. Older Cargo
+    // ignores build-dir and uses target alone; newer Cargo isolates both roots.
+    // No version inference authorizes missing ordinary locks or legacy leftovers.
+    fn catalog(root: &Path) -> io::Result<Option<(Self, Vec<OutputEntry>)>> {
+        let target = root.join("target");
+        let build = root.join("build");
+        let mut entries = Vec::new();
+        for path in [&target, &build] {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.is_dir() => catalog_output(path, root, &mut entries)?,
+                Ok(_) => return Err(io::Error::other("unknown compiler output root kind")),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        if !entries.iter().any(|entry| entry.path == target) {
+            return Err(io::Error::other(
+                "compiler output layout is missing mandatory target root",
+            ));
+        }
+        let native = env!("HORIZON_BUILD_HOST");
+        let profiles = [target.join("debug"), target.join(native).join("debug")];
+        if !entries
+            .iter()
+            .any(|entry| entry.metadata.is_dir() && entry.path == profiles[1])
+        {
+            return Err(io::Error::other(
+                "unknown compiler layout: explicit native debug profile missing",
+            ));
+        }
+        for profile in &profiles {
+            if entries
+                .iter()
+                .any(|entry| entry.metadata.is_dir() && entry.path == *profile)
+                && !entries
+                    .iter()
+                    .any(|entry| entry.cargo_lock && entry.path == profile.join(".cargo-lock"))
+            {
+                return Err(io::Error::other(format!(
+                    "actual Cargo ordinary output lock missing: {}",
+                    profile.join(".cargo-lock").display()
+                )));
+            }
+        }
+        // Only the known host/native debug output scopes of this exact command
+        // are supported. Additional normal locks are captured, never ignored.
+        let allowed_profiles = [
+            target.join("debug"),
+            target.join(native).join("debug"),
+            build.join("debug"),
+            build.join(native).join("debug"),
+        ];
+        for entry in &entries {
+            let output_root = if entry.path.starts_with(&target) {
+                &target
+            } else {
+                &build
+            };
+            if entry.metadata.is_dir()
+                && entry.path != *output_root
+                && entry.path != output_root.join(native)
+                && !allowed_profiles
+                    .iter()
+                    .any(|profile| entry.path.starts_with(profile))
+            {
+                return Err(io::Error::other(format!(
+                    "unknown compiler output scope: {}",
+                    entry.path.display()
+                )));
+            }
+            if entry.cargo_lock
+                && !allowed_profiles
+                    .iter()
+                    .any(|profile| entry.path.parent() == Some(profile.as_path()))
+            {
+                return Err(io::Error::other(format!(
+                    "unknown normal Cargo lock scope: {}",
+                    entry.path.display()
+                )));
+            }
+        }
+        let stamp = |entry: &OutputEntry| -> io::Result<OutputStamp> {
+            Ok(OutputStamp {
+                path: entry.path.clone(),
+                id: entry.id,
+                bytes: entry.metadata.len(),
+                modified: entry.metadata.modified()?,
+                hash: entry.hash.clone(),
+            })
+        };
+        let roots = entries
+            .iter()
+            .filter(|entry| entry.path == target || entry.path == build)
+            .map(stamp)
+            .collect::<io::Result<Vec<_>>>()?;
+        let locks = entries
+            .iter()
+            .filter(|entry| entry.cargo_lock)
+            .map(stamp)
+            .collect::<io::Result<Vec<_>>>()?;
+        let kind = if roots.len() == 2 {
+            OutputKind::SplitTargetBuild
+        } else {
+            OutputKind::UnifiedTarget
+        };
+        Ok(Some((Self { kind, roots, locks }, entries)))
+    }
+
+    fn capture(root: &Path) -> io::Result<Option<Self>> {
+        Ok(Self::catalog(root)?.map(|(layout, _)| layout))
+    }
+
+    fn receipt(&self) -> serde_json::Value {
+        let stamp = |entry: &OutputStamp| serde_json::json!({"path":entry.path,"identity":format!("{:?}",entry.id),"bytes":entry.bytes,"modified":format!("{:?}",entry.modified),"sha256":entry.hash});
+        serde_json::json!({"kind":format!("{:?}",self.kind),"roots":self.roots.iter().map(stamp).collect::<Vec<_>>(),"required_locks":self.locks.iter().map(stamp).collect::<Vec<_>>()})
+    }
 }
 
 fn file_hash(file: &mut fs::File) -> io::Result<String> {
@@ -429,7 +574,9 @@ impl CheckedOutput {
         {
             return Err(io::Error::other("compiler tree not authoritatively idle"));
         }
-        let mut entries = Vec::new();
+        let layout = self.layout.as_ref().ok_or_else(|| {
+            io::Error::other("no successful compiler output-layout snapshot; outputs retained")
+        })?;
         let root_metadata = checked_path(&self.root, &self.root)?;
         let root_id = file_id::get_high_res_file_id(&self.root)?;
         let root_guard = fs::OpenOptions::new()
@@ -437,29 +584,10 @@ impl CheckedOutput {
             .custom_flags(0x0200_0000)
             .share_mode(0x1 | 0x2)
             .open(&self.root)?;
-        for name in ["target", "build"] {
-            catalog_output(&self.root.join(name), &self.root, &mut entries)?;
-        }
-        // Cargo 1.99's current native debug invocation creates these four real locks;
-        // build-dir output is covered by its target-dir locks, not a fabricated lock.
-        for profile in [
-            self.root.join("target/debug"),
-            self.root
-                .join("target")
-                .join(env!("HORIZON_BUILD_HOST"))
-                .join("debug"),
-        ] {
-            for name in [".cargo-lock", ".cargo-artifact-lock"] {
-                if !entries
-                    .iter()
-                    .any(|entry| entry.cargo_lock && entry.path == profile.join(name))
-                {
-                    return Err(io::Error::other(format!(
-                        "actual Cargo output lock missing: {}",
-                        profile.join(name).display()
-                    )));
-                }
-            }
+        let (current, mut entries) = OutputLayout::catalog(&self.root)?
+            .ok_or_else(|| io::Error::other("recorded compiler output layout is missing"))?;
+        if &current != layout {
+            return Err(io::Error::other("recorded compiler output roots or normal lock set/identity/metadata changed; outputs retained"));
         }
         let manifest = entries.iter().map(|entry| serde_json::json!({
             "path":entry.path, "identity":format!("{:?}",entry.id), "directory":entry.metadata.is_dir(),
@@ -845,10 +973,44 @@ fn run_checked_with_limits(
             // The files must close before any compiler-output cleanup can begin.
             drop(stdout);
             drop(stderr);
+            let root = root.canonicalize()?;
+            // Capture before returning this mutable owner to a caller. No later
+            // missing/extra lock or root is inferred to be an older Cargo layout.
+            let layout = match OutputLayout::capture(&root) {
+                Ok(layout) => layout,
+                Err(error) => {
+                    let message = format!(
+                        "output-layout capture failed: {error}; all outputs retained at {}",
+                        root.display()
+                    );
+                    let record = serde_json::json!({"state":"error","phase":"output-layout-capture","error":error.to_string(),"root":root});
+                    let retained = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(root.join("cleanup-journal.jsonl"))
+                        .and_then(|mut journal| {
+                            writeln!(journal, "{record}")?;
+                            journal.sync_all()
+                        });
+                    if let Err(journal_error) = retained {
+                        return Err(io::Error::other(format!(
+                            "{message}; capture error journal failed: {journal_error}"
+                        )));
+                    }
+                    return Err(io::Error::other(message));
+                }
+            };
+            if let Some(layout) = &layout {
+                fs::write(
+                    root.join("output-layout.json"),
+                    serde_json::to_vec_pretty(&layout.receipt())?,
+                )?;
+            }
             Ok(CheckedOutput {
                 stdout: output,
                 tree,
-                root: root.canonicalize()?,
+                root,
+                layout,
             })
         }
         Err(primary) => {
@@ -1001,6 +1163,211 @@ mod tests {
         );
     }
 
+    // A source-informed filesystem model of Cargo 1.85's ordinary target-only
+    // layout, not a native run of Cargo 1.85 or an invented production lock.
+    fn modeled_layout_root(split: bool, host_profile: bool) -> PathBuf {
+        let root = fresh_root().unwrap();
+        for profile in [
+            root.join("target/debug"),
+            root.join("target")
+                .join(env!("HORIZON_BUILD_HOST"))
+                .join("debug"),
+        ] {
+            if !host_profile && profile == root.join("target/debug") {
+                continue;
+            }
+            fs::create_dir_all(&profile).unwrap();
+            fs::write(profile.join(".cargo-lock"), "").unwrap();
+            fs::write(
+                profile.join("owned-model-output.rmeta"),
+                "owned model output",
+            )
+            .unwrap();
+            if split {
+                fs::write(profile.join(".cargo-artifact-lock"), "").unwrap();
+            }
+        }
+        if split {
+            fs::create_dir(root.join("build")).unwrap();
+            fs::write(root.join("build/owned-model.o"), "owned model output").unwrap();
+        }
+        root
+    }
+
+    fn modeled_output_owner(split: bool, host_profile: bool) -> CheckedOutput {
+        let root = modeled_layout_root(split, host_profile);
+        let command = process::command(console_probe());
+        run_checked_with_limits(&command, &root, Limits::default()).unwrap()
+    }
+
+    #[test]
+    fn modeled_legacy_target_only_layout_cleans_without_modern_artifact_locks() {
+        let mut output = modeled_output_owner(false, true);
+        let root = output.root.clone();
+        output.cleanup_outputs().unwrap();
+        assert!(!root.join("target").exists());
+        assert!(!root.join("build").exists());
+        assert!(fs::read_to_string(root.join("cleanup-journal.jsonl"))
+            .unwrap()
+            .contains("\"state\":\"complete\""));
+    }
+
+    #[test]
+    fn modeled_split_layout_keeps_all_observed_modern_locks_required() {
+        let mut output = modeled_output_owner(true, true);
+        let root = output.root.clone();
+        output.cleanup_outputs().unwrap();
+        assert!(!root.join("target").exists());
+        assert!(!root.join("build").exists());
+    }
+
+    #[test]
+    fn modeled_native_only_profile_does_not_require_absent_host_profile_lock() {
+        let mut output = modeled_output_owner(false, false);
+        let root = output.root.clone();
+        output.cleanup_outputs().unwrap();
+        assert!(!root.join("target").exists());
+    }
+
+    #[test]
+    fn modeled_layout_snapshot_rejects_missing_changed_or_new_locks_and_roots() {
+        for behavior in [
+            "missing-host-lock",
+            "missing-native-lock",
+            "missing-recorded-extra",
+            "changed-lock",
+            "replaced-lock",
+            "new-lock",
+            "unknown-lock",
+            "new-build-root",
+            "removed-build-root",
+        ] {
+            let split = matches!(behavior, "missing-recorded-extra" | "removed-build-root");
+            let mut output = modeled_output_owner(split, true);
+            let root = output.root.clone();
+            let host = root.join("target/debug");
+            let native = root
+                .join("target")
+                .join(env!("HORIZON_BUILD_HOST"))
+                .join("debug");
+            match behavior {
+                "missing-host-lock" => {
+                    fs::rename(host.join(".cargo-lock"), root.join("held-lock")).unwrap()
+                }
+                "missing-native-lock" => {
+                    fs::rename(native.join(".cargo-lock"), root.join("held-lock")).unwrap()
+                }
+                "missing-recorded-extra" => {
+                    fs::rename(host.join(".cargo-artifact-lock"), root.join("held-lock")).unwrap()
+                }
+                "changed-lock" => fs::write(host.join(".cargo-lock"), "changed lock").unwrap(),
+                "replaced-lock" => {
+                    fs::rename(host.join(".cargo-lock"), root.join("held-lock")).unwrap();
+                    fs::write(host.join(".cargo-lock"), "").unwrap();
+                }
+                "new-lock" => fs::write(host.join(".cargo-artifact-lock"), "").unwrap(),
+                "unknown-lock" => {
+                    fs::create_dir(host.join("deps")).unwrap();
+                    fs::write(host.join("deps/.cargo-lock"), "").unwrap();
+                }
+                "new-build-root" => fs::create_dir(root.join("build")).unwrap(),
+                "removed-build-root" => {
+                    fs::remove_file(root.join("build/owned-model.o")).unwrap();
+                    fs::remove_dir(root.join("build")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let error = output.cleanup_outputs().unwrap_err().to_string();
+            assert!(error.contains("cleanup incomplete"), "{behavior}: {error}");
+            assert!(root.join("target").is_dir(), "{behavior}");
+            assert!(
+                host.join("owned-model-output.rmeta").is_file(),
+                "{behavior}"
+            );
+            let journal = fs::read_to_string(root.join("cleanup-journal.jsonl")).unwrap();
+            assert!(
+                journal.contains("\"state\":\"error\""),
+                "{behavior}: {journal}"
+            );
+            assert!(
+                !journal.contains("\"state\":\"removed\""),
+                "{behavior}: {journal}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_empty_or_incomplete_layout_never_gets_cleanup_authority() {
+        for behavior in [
+            "empty-target",
+            "host-only",
+            "build-only",
+            "unknown-scope",
+            "missing-native-ordinary",
+            "missing-host-ordinary",
+        ] {
+            let root = if behavior.starts_with("missing-") {
+                modeled_layout_root(false, true)
+            } else {
+                fresh_root().unwrap()
+            };
+            match behavior {
+                "empty-target" => fs::create_dir(root.join("target")).unwrap(),
+                "host-only" => {
+                    fs::create_dir_all(root.join("target/debug")).unwrap();
+                    fs::write(root.join("target/debug/.cargo-lock"), "").unwrap();
+                }
+                "build-only" => fs::create_dir(root.join("build")).unwrap(),
+                "unknown-scope" => {
+                    let native = root
+                        .join("target")
+                        .join(env!("HORIZON_BUILD_HOST"))
+                        .join("debug");
+                    fs::create_dir_all(&native).unwrap();
+                    fs::write(native.join(".cargo-lock"), "").unwrap();
+                    fs::create_dir(root.join("target/unexpected")).unwrap();
+                }
+                "missing-native-ordinary" => fs::remove_file(
+                    root.join("target")
+                        .join(env!("HORIZON_BUILD_HOST"))
+                        .join("debug/.cargo-lock"),
+                )
+                .unwrap(),
+                "missing-host-ordinary" => {
+                    fs::remove_file(root.join("target/debug/.cargo-lock")).unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let command = process::command(console_probe());
+            let error = run_checked_with_limits(&command, &root, Limits::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("output-layout capture failed"),
+                "{behavior}: {error}"
+            );
+            if behavior.starts_with("missing-") {
+                assert!(
+                    error.contains("ordinary output lock missing"),
+                    "{behavior}: {error}"
+                );
+            }
+            if behavior == "unknown-scope" {
+                assert!(error.contains("unknown compiler output scope"), "{error}");
+            }
+            assert!(root.join("cleanup-journal.jsonl").is_file());
+            assert!(root.join("cargo.stdout.log").is_file());
+        }
+        let root = fresh_root().unwrap();
+        let command = process::command(console_probe());
+        let mut output = run_checked_with_limits(&command, &root, Limits::default()).unwrap();
+        assert!(output
+            .cleanup_outputs()
+            .unwrap_err()
+            .to_string()
+            .contains("no successful compiler output-layout snapshot"));
+    }
+
     #[test]
     fn cleanup_lock_contention_and_changed_outputs_retain_diagnostics() {
         for behavior in ["locked", "replaced", "missing-lock"] {
@@ -1124,6 +1491,7 @@ mod tests {
             stdout: String::new(),
             tree,
             root: root.clone(),
+            layout: None,
         };
         assert!(output
             .cleanup_outputs()
