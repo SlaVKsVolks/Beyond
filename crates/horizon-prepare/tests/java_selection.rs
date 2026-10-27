@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", forbid(unsafe_code))]
+
 //! Each scenario runs in its own process so Java discovery sees a controlled environment.
 use horizon_prepare::java;
 use std::{env, fs, path::Path, process::Command};

@@ -133,10 +133,224 @@ impl Drop for Import {
 mod tests {
     use super::*;
 
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "horizon-file-copy-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create fixture: {error}"),
+                }
+            }
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove file-copy fixture");
+        }
+    }
+
+    // A reversed descriptor pair, lost overwrite, or hard-link substitution breaks these
+    // literal byte assertions. Unsupported reflinks are not evidence of clone success.
+    #[cfg(target_os = "linux")]
+    fn cloned_or_unsupported(result: io::Result<()>) -> bool {
+        match result {
+            Ok(()) => {
+                writeln!(
+                    io::stderr().lock(),
+                    "DIRECT_FICLONE_SUPPORTED: real file clone succeeded"
+                )
+                .unwrap();
+                true
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code == libc::EOPNOTSUPP || code == libc::ENOTTY) =>
+            {
+                writeln!(io::stderr().lock(),
+                    "DIRECT_FICLONE_UNSUPPORTED: errno={:?}, {error}; positive reflink proof unavailable",
+                    error.raw_os_error()).unwrap();
+                false
+            }
+            Err(error) => panic!("unexpected direct clone failure: {error}"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_clone_overwrites_without_linking_either_direction() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("target");
+        fs::write(&source, b"source bytes").unwrap();
+        fs::write(&target, b"old destination longer than source").unwrap();
+        if !cloned_or_unsupported(clone_file(&source, &target)) {
+            assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+            assert_eq!(fs::read(&target).unwrap(), b"");
+            return;
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"source bytes");
+        fs::write(&target, b"target rewrite").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+        fs::write(&source, b"source rewrite").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"target rewrite");
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn direct_clone_explicitly_reports_unsupported_without_touching_files() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("target");
+        fs::write(&source, b"source bytes").unwrap();
+        fs::write(&target, b"old destination").unwrap();
+        assert_eq!(
+            clone_file(&source, &target).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+        assert_eq!(fs::read(&target).unwrap(), b"old destination");
+    }
+
+    #[test]
+    fn clone_or_copy_overwrites_and_keeps_writes_independent() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("target");
+        fs::write(&source, b"source bytes").unwrap();
+        fs::write(&target, b"old destination longer than source").unwrap();
+        clone_or_copy(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"source bytes");
+        fs::write(&target, b"target rewrite").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+        fs::write(&source, b"source rewrite").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"target rewrite");
+    }
+
+    #[test]
+    fn missing_source_does_not_clobber_existing_destination() {
+        let fixture = Fixture::new();
+        let source = fixture.path("missing");
+        let target = fixture.path("target");
+        fs::write(&target, b"old destination").unwrap();
+        assert!(clone_file(&source, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"old destination");
+        assert_eq!(
+            clone_or_copy(&source, &target).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"old destination");
+    }
+
+    #[test]
+    fn invalid_destination_reports_error_without_changing_source() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("missing-parent/target");
+        fs::write(&source, b"source bytes").unwrap();
+        assert!(clone_file(&source, &target).is_err());
+        assert_eq!(
+            clone_or_copy(&source, &target).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+        assert!(!target.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_clone_follows_symlinks_and_accepts_non_utf8_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{symlink, PermissionsExt},
+        };
+
+        let fixture = Fixture::new();
+        let source = fixture.0.join(OsStr::from_bytes(b"source-\xff"));
+        let target = fixture.0.join(OsStr::from_bytes(b"target-\xfe"));
+        let source_link = fixture.path("source-link");
+        let target_link = fixture.path("target-link");
+        fs::write(&source, b"source bytes").unwrap();
+        fs::write(&target, b"old destination").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&source, &source_link).unwrap();
+        symlink(&target, &target_link).unwrap();
+        let supported = cloned_or_unsupported(clone_file(&source_link, &target_link));
+        assert!(fs::symlink_metadata(&source_link).unwrap().is_symlink());
+        assert!(fs::symlink_metadata(&target_link).unwrap().is_symlink());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            if supported {
+                &b"source bytes"[..]
+            } else {
+                &b""[..]
+            }
+        );
+        // The same paths must still copy correctly when a reflink is unsupported.
+        clone_or_copy(&source_link, &target_link).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"source bytes");
+    }
+
+    #[test]
+    fn rejected_checksum_preserves_destination_and_removes_partial_file() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("target");
+        fs::write(&source, b"abc").unwrap();
+        fs::write(&target, b"old destination").unwrap();
+        for algorithm in ["sha1", "sha256"] {
+            let result = Import::stage(&source, &target, "bad hash", algorithm, false);
+            assert!(result.is_err());
+            assert_eq!(fs::read(&target).unwrap(), b"old destination");
+            assert_eq!(fs::read(&source).unwrap(), b"abc");
+            assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn dropping_uncommitted_import_removes_only_staging_file() {
+        let fixture = Fixture::new();
+        let source = fixture.path("source");
+        let target = fixture.path("target");
+        fs::write(&source, b"abc").unwrap();
+        fs::write(&target, b"old destination").unwrap();
+        let staged = Import::stage(
+            &source,
+            &target,
+            "a9993e364706816aba3e25717850c26c9cd0d89d",
+            "sha1",
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 3);
+        assert_eq!(fs::read(&target).unwrap(), b"old destination");
+        drop(staged);
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
+        assert_eq!(fs::read(&target).unwrap(), b"old destination");
+        assert_eq!(fs::read(&source).unwrap(), b"abc");
+    }
+
     #[test]
     fn copies_are_independent_and_checked_before_publication() {
-        let dir = std::env::temp_dir().join(format!("horizon-file-copy-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let fixture = Fixture::new();
+        let dir = &fixture.0;
         let source = dir.join("source");
         let target = dir.join("target");
         let data = vec![42; 200_000]; // More than one streaming buffer.
@@ -172,9 +386,8 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 3);
         drop(staged);
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 2);
     }
 }

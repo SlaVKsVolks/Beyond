@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", forbid(unsafe_code))]
+
 //! A fake Java tool for process-level JDK selection tests; no installed Java is needed.
 use std::{env, fs, process};
 

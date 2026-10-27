@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", forbid(unsafe_code))]
+
 //! `horizon-prepare`: prepares Horizon's resources from your own Minecraft Java Edition.
 //! Its flags are the ones tools/prepare_native_client.py took.
 

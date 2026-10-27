@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", forbid(unsafe_code))]
+
 //! Prepares Horizon's resources from the player's own Minecraft Java Edition: imports the pinned
 //! client jar, libraries and version JSON from their official launcher install and the server
 //! jar they downloaded (each checked against research-lock.json), copies the game's assets and

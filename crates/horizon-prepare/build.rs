@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", forbid(unsafe_code))]
+
 //! HORIZON_PREPARE_SOURCES_SHA256: a digest of this crate's sources, which the launcher compares
 //! with a version folder's copy to know whether it may prepare that version in-process. Keep the
 //! algorithm the same as `horizon_prepare::sources_sha256`.
