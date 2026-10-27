@@ -260,98 +260,6 @@ fn scoped_reach(
     }
 }
 
-#[cfg(test)]
-mod scope_tests {
-    use super::*;
-
-    #[test]
-    fn loopback_scope_does_not_discover_external_addresses() {
-        let reach = scoped_reach(1234, PathMode::Auto, direct::NetworkScope::Loopback, || {
-            panic!("external discovery must not run")
-        });
-        assert_eq!(
-            reach.endpoints(),
-            vec![SocketAddr::from(([127, 0, 0, 1], 1234))]
-        );
-    }
-
-    #[test]
-    fn loopback_scope_rejects_remote_lan_before_starting() {
-        let config = HostConfig {
-            lan: SocketAddr::from(([192, 0, 2, 1], 1234)),
-            protocol: 777,
-            game: "test".into(),
-            relay: None,
-            path: PathMode::Auto,
-            port: 0,
-            reach: reach::Options {
-                map_port: false,
-                stun: vec![],
-                loopback: true,
-            },
-        };
-        assert_eq!(
-            Host::start_with_scope(config, direct::NetworkScope::Loopback)
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-    }
-
-    #[test]
-    fn loopback_scope_rejects_nonlocal_relay_before_starting() {
-        for relay in ["192.0.2.1:1234", "localhost:1234"] {
-            let config = HostConfig {
-                lan: SocketAddr::from(([127, 0, 0, 1], 1)),
-                protocol: 777,
-                game: "test".into(),
-                relay: Some(relay.into()),
-                path: PathMode::Auto,
-                port: 0,
-                reach: reach::Options {
-                    map_port: false,
-                    stun: vec![],
-                    loopback: true,
-                },
-            };
-            assert_eq!(
-                Host::start_with_scope(config, direct::NetworkScope::Loopback)
-                    .err()
-                    .unwrap()
-                    .kind(),
-                io::ErrorKind::InvalidInput
-            );
-        }
-    }
-
-    #[test]
-    fn occupied_requested_port_falls_back_and_stop_releases_listener() {
-        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
-        let requested = occupied.local_addr().unwrap().port();
-        let config = HostConfig {
-            lan: SocketAddr::from(([127, 0, 0, 1], 1)),
-            protocol: 777,
-            game: "test".into(),
-            relay: None,
-            path: PathMode::Auto,
-            port: requested,
-            reach: reach::Options {
-                map_port: false,
-                stun: vec![],
-                loopback: true,
-            },
-        };
-        let mut host = Host::start_with_scope(config, direct::NetworkScope::Loopback).unwrap();
-        let actual = host.state().port;
-        assert_ne!(actual, requested);
-        host.stop();
-        let (listeners, _) =
-            direct::listen_with_scope(actual, direct::NetworkScope::Loopback).unwrap();
-        drop(listeners);
-    }
-}
-
 fn share(shared: Arc<Shared>, port: u16) {
     let config = &shared.config;
     let reach = scoped_reach(port, config.path, shared.scope, || {
@@ -710,5 +618,97 @@ fn serve_relayed(
     shared.routes.lock().unwrap().remove(&session);
     if let Ok(settled) = settled {
         carry(shared, session, settled.secure, settled.direct);
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_scope_does_not_discover_external_addresses() {
+        let reach = scoped_reach(1234, PathMode::Auto, direct::NetworkScope::Loopback, || {
+            panic!("external discovery must not run")
+        });
+        assert_eq!(
+            reach.endpoints(),
+            vec![SocketAddr::from(([127, 0, 0, 1], 1234))]
+        );
+    }
+
+    #[test]
+    fn loopback_scope_rejects_remote_lan_before_starting() {
+        let config = HostConfig {
+            lan: SocketAddr::from(([192, 0, 2, 1], 1234)),
+            protocol: 777,
+            game: "test".into(),
+            relay: None,
+            path: PathMode::Auto,
+            port: 0,
+            reach: reach::Options {
+                map_port: false,
+                stun: vec![],
+                loopback: true,
+            },
+        };
+        assert_eq!(
+            Host::start_with_scope(config, direct::NetworkScope::Loopback)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn loopback_scope_rejects_nonlocal_relay_before_starting() {
+        for relay in ["192.0.2.1:1234", "localhost:1234"] {
+            let config = HostConfig {
+                lan: SocketAddr::from(([127, 0, 0, 1], 1)),
+                protocol: 777,
+                game: "test".into(),
+                relay: Some(relay.into()),
+                path: PathMode::Auto,
+                port: 0,
+                reach: reach::Options {
+                    map_port: false,
+                    stun: vec![],
+                    loopback: true,
+                },
+            };
+            assert_eq!(
+                Host::start_with_scope(config, direct::NetworkScope::Loopback)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn occupied_requested_port_falls_back_and_stop_releases_listener() {
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let requested = occupied.local_addr().unwrap().port();
+        let config = HostConfig {
+            lan: SocketAddr::from(([127, 0, 0, 1], 1)),
+            protocol: 777,
+            game: "test".into(),
+            relay: None,
+            path: PathMode::Auto,
+            port: requested,
+            reach: reach::Options {
+                map_port: false,
+                stun: vec![],
+                loopback: true,
+            },
+        };
+        let mut host = Host::start_with_scope(config, direct::NetworkScope::Loopback).unwrap();
+        let actual = host.state().port;
+        assert_ne!(actual, requested);
+        host.stop();
+        let (listeners, _) =
+            direct::listen_with_scope(actual, direct::NetworkScope::Loopback).unwrap();
+        drop(listeners);
     }
 }

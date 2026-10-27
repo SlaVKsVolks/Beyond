@@ -73,28 +73,6 @@ fn peer_candidates(theirs: &[String], scope: direct::NetworkScope) -> Vec<Socket
         .collect()
 }
 
-#[cfg(test)]
-mod scope_tests {
-    use super::*;
-
-    #[test]
-    fn loopback_scope_filters_peer_candidates() {
-        let candidates = vec![
-            "192.0.2.1:1234".into(),
-            "127.0.0.1:4321".into(),
-            "invalid".into(),
-        ];
-        assert_eq!(
-            peer_candidates(&candidates, direct::NetworkScope::Loopback),
-            vec![SocketAddr::from(([127, 0, 0, 1], 4321))]
-        );
-        assert_eq!(
-            peer_candidates(&candidates, direct::NetworkScope::AllInterfaces).len(),
-            2
-        );
-    }
-}
-
 /// Settle a session on the relayed stream `relay` (already protected) or a
 /// direct one.
 pub(crate) fn settle(
@@ -219,5 +197,27 @@ pub(crate) fn settle(
             stop.store(true, Ordering::Relaxed);
             fallback(rr, rw)
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_scope_filters_peer_candidates() {
+        let candidates = vec![
+            "192.0.2.1:1234".into(),
+            "127.0.0.1:4321".into(),
+            "invalid".into(),
+        ];
+        assert_eq!(
+            peer_candidates(&candidates, direct::NetworkScope::Loopback),
+            vec![SocketAddr::from(([127, 0, 0, 1], 4321))]
+        );
+        assert_eq!(
+            peer_candidates(&candidates, direct::NetworkScope::AllInterfaces).len(),
+            2
+        );
     }
 }
