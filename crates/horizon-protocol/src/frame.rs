@@ -2,7 +2,7 @@
 //! zlib compression above a threshold (CompressionEncoder / CompressionDecoder).
 use crate::{
     Error, Result,
-    buf::{Reader, varint_size, write_varint},
+    buf::{Reader, write_varint},
 };
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use std::io::{Read, Write};
@@ -85,7 +85,7 @@ pub fn decompress(frame: Vec<u8>, threshold: Option<usize>) -> Result<Vec<u8>> {
     let mut r = Reader::new(&frame);
     let size = r.varint()?;
     if size == 0 {
-        return Ok(frame[1..].to_vec());
+        return Ok(frame[r.position()..].to_vec());
     }
     let size = usize::try_from(size).map_err(|_| Error::new("negative uncompressed length"))?;
     if size < threshold {
@@ -98,7 +98,7 @@ pub fn decompress(frame: Vec<u8>, threshold: Option<usize>) -> Result<Vec<u8>> {
             "Badly compressed packet - size of {size} is larger than protocol maximum"
         )));
     }
-    let start = varint_size(size as i32);
+    let start = r.position();
     let mut out = Vec::with_capacity(size);
     ZlibDecoder::new(&frame[start..])
         .take(size as u64 + 1)

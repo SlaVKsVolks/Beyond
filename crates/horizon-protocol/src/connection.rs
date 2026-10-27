@@ -117,6 +117,12 @@ impl Stream {
             Self::Memory(p) => Self::Memory(p.try_clone()),
         })
     }
+    fn read_timeout(&self) -> std::io::Result<Option<Duration>> {
+        match self {
+            Self::Tcp(s) => s.read_timeout(),
+            Self::Memory(p) => Ok(*p.timeout.lock().unwrap()),
+        }
+    }
     fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
         match self {
             Self::Tcp(s) => s.set_read_timeout(timeout),
@@ -278,6 +284,7 @@ impl Connection {
 impl ConnReader {
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
+        let mut discard_budget = None;
         loop {
             if let Some(frame) = frame::split(&mut self.buffer)? {
                 if frame.is_empty() {
@@ -285,6 +292,20 @@ impl ConnReader {
                 }
                 let body = frame::decompress(frame, self.threshold)?;
                 if body.is_empty() {
+                    let (started, timeout) = match discard_budget {
+                        Some(budget) => budget,
+                        None => match self.stream.read_timeout()? {
+                            Some(timeout) => {
+                                let budget = (Instant::now(), timeout);
+                                discard_budget = Some(budget);
+                                budget
+                            }
+                            None => continue,
+                        },
+                    };
+                    if started.elapsed() >= timeout {
+                        return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+                    }
                     continue;
                 }
                 let mut r = Reader::new(&body);
@@ -614,6 +635,85 @@ mod tests {
                 0
             );
         }
+    }
+    #[test]
+    fn review_overlong_zero_header_skips_empty_and_preserves_id_zero() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut c = Connection::local(receiver);
+        c.set_compression(64);
+        sender.write_all(&[2, 0x80, 0, 4, 0x80, 0, 0, 42]).unwrap();
+        drop(sender);
+        assert_eq!(c.recv().unwrap(), (0, vec![42]));
+        assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 1);
+        assert_eq!(c.reader.counters.bytes_in.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn review_overlong_positive_header_decodes_compressed_packet() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut c = Connection::local(receiver);
+        c.set_compression(64);
+        let mut body = vec![0];
+        body.extend_from_slice(&[42; 63]);
+        let encoded = frame::contents(&body, Some(64)).unwrap();
+        assert_eq!(encoded[0], 64);
+        let mut contents = vec![0xc0, 0];
+        contents.extend_from_slice(&encoded[1..]);
+        let wire = frame::prefixed(&contents);
+        sender.write_all(&wire).unwrap();
+        drop(sender);
+        assert_eq!(c.recv().unwrap(), (0, vec![42; 63]));
+        assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            c.reader.counters.bytes_in.load(Ordering::Relaxed),
+            wire.len() as i64
+        );
+    }
+
+    #[test]
+    fn review_zero_timeout_bounds_discard_only_phase() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut c = Connection::local(receiver);
+        c.set_compression(64);
+        c.reader.set_read_timeout(Some(Duration::ZERO)).unwrap();
+        sender.write_all(&[1, 0, 1, 0, 3, 0, 0, 42]).unwrap();
+        drop(sender);
+        assert!(
+            c.recv()
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("timed out")
+        );
+        assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 0);
+        assert_eq!(c.reader.counters.bytes_in.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn review_positive_timeout_allows_real_packet_after_empty() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut c = Connection::local(receiver);
+        c.set_compression(64);
+        c.reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        sender.write_all(&[3, 0, 0, 7, 1, 0, 3, 0, 0, 42]).unwrap();
+        drop(sender);
+        assert_eq!(c.recv().unwrap(), (0, vec![7]));
+        assert_eq!(c.recv().unwrap(), (0, vec![42]));
+        assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 2);
+        assert_eq!(c.reader.counters.bytes_in.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn review_truncated_compression_header_remains_error() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut c = Connection::local(receiver);
+        c.set_compression(64);
+        sender.write_all(&[1, 0x80]).unwrap();
+        drop(sender);
+        assert!(c.recv().is_err());
+        assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 0);
     }
     #[test]
     fn dropping_a_pipe_end_closes_it() {
