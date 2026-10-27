@@ -1,4 +1,5 @@
 //! `horizon-launcher logs`: the end of the game's latest.log, and its newest crash report.
+#![cfg_attr(windows, forbid(unsafe_code))]
 use std::path::Path;
 use std::process::Command;
 

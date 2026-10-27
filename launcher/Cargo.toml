@@ -56,6 +56,11 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppe
 raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+win32console = "=0.1.5"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Populate the exact dependency sources used by the independently locked console fixture.
+winconsole = { version = "=0.11.1", features = ["window"] }
 
 [target.'cfg(windows)'.build-dependencies]
 # The icon resource in the .exe (build.rs).

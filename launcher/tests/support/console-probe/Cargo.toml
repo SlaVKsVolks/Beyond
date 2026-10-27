@@ -1,0 +1,15 @@
+[package]
+name = "horizon-console-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "console-probe"
+path = "../console_probe.rs"
+
+[target.'cfg(windows)'.dependencies]
+win32console = "=0.1.5"
+winconsole = { version = "=0.11.1", features = ["window"] }

@@ -6,13 +6,16 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 
 ## Our version: platform scope
 
-**User decision — 2026-10-27:** macOS support is out of scope for our version of Horizon, including
-Apple Silicon and Intel Macs. Do not plan or require macOS-specific implementation, compatibility fixes,
-testing, packaging, signing/notarization, or releases for this version. This overrides upstream macOS
-support assumptions in the inherited documentation below; it does not change upstream Horizon's policy.
-Evaluate shared changes for their relevance to in-scope platforms rather than rejecting them merely
-because they also affect macOS. Existing macOS code and workflows may remain: this scope decision alone
-does not authorize removing code or changing build/CI configuration. Other platform decisions are unchanged.
+**User decision - 2026-10-27:** the current milestone of our fork is Windows-only. Linux support is
+deferred; retain its parked work for a future milestone. macOS support remains out of scope, including
+Apple Silicon and Intel Macs: no macOS-specific implementation, compatibility fixes, testing,
+packaging, signing/notarization, or releases are planned for this version. This is our fork's scope,
+not upstream Horizon's policy or a claim that Windows support is complete. Inherited upstream
+platform badges, download instructions, and Linux/macOS references are not our support commitment.
+
+Preserve existing platform code, workflows, and mandatory checks. This scope record does not authorize
+removing them, changing build/CI configuration, or starting deployment or release work. Evaluate shared
+changes for their in-scope relevance rather than rejecting them merely because they also affect macOS.
 
 ## Rules that bite
 

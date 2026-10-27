@@ -1,4 +1,5 @@
 //! Windows background processes must keep logs, input and exit status without a console.
+#![cfg_attr(windows, forbid(unsafe_code))]
 #![cfg(windows)]
 
 mod support;

@@ -1,4 +1,5 @@
 //! Distributor wrappers must survive disabling and re-enabling menu integration.
+#![cfg_attr(windows, forbid(unsafe_code))]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

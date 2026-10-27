@@ -1,5 +1,8 @@
 //! A real Windows console program used to check hidden children and their streams.
-use std::ffi::c_void;
+#![forbid(unsafe_code)]
+
+#[cfg(not(windows))]
+compile_error!("the console fixture requires a native Windows host");
 use std::io;
 
 fn hardware_probe(visible: bool) -> bool {
@@ -41,23 +44,11 @@ fn hardware_probe(visible: bool) -> bool {
     true
 }
 
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetConsoleWindow() -> *mut c_void;
-}
-
-#[link(name = "user32")]
-extern "system" {
-    fn IsWindowVisible(window: *mut c_void) -> i32;
-}
-
 fn main() {
     // A console connection can exist without a terminal window, including in ConPTY.
-    // SAFETY: The opaque window handle comes from Windows and is only queried, never changed.
-    let visible = unsafe {
-        let window = GetConsoleWindow();
-        !window.is_null() && IsWindowVisible(window) != 0
-    };
+    // These are direct OS queries; this fixture never attaches/detaches concurrently.
+    let visible = win32console::console::WinConsole::get_window().is_some()
+        && winconsole::window::is_visible();
     if hardware_probe(visible) {
         return;
     }

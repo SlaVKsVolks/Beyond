@@ -1,4 +1,5 @@
 //! The launcher's core, shared by the GUI, the CLI and the MCP server.
+#![cfg_attr(windows, forbid(unsafe_code))]
 pub mod account;
 pub mod agents;
 pub mod backend;

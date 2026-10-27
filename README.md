@@ -29,14 +29,16 @@ Horizon is Minecraft: Java Edition 26.3 rewritten in Rust: a native game that re
 
 ## Platform scope for our version
 
-**User decision — 2026-10-27:** macOS support is out of scope for our version of Horizon, on both
-Apple Silicon and Intel Macs. We will not target macOS-specific implementation, compatibility fixes,
-testing, packaging, signing/notarization, or releases. Other platform decisions are unchanged.
+**User decision - 2026-10-27:** our fork's current milestone is Windows-only. Linux support is deferred;
+its parked work is retained for a future milestone. macOS remains excluded on both Apple Silicon and
+Intel Macs: no macOS-specific implementation, compatibility fixes, testing, packaging,
+signing/notarization, or releases are planned. This records scope, not completed Windows support.
 
-The inherited upstream platform badge, download instructions, and macOS references below describe
-upstream Horizon, not a macOS support commitment for our version. Existing macOS code and workflows
-are retained; recording this scope does not remove them or change build/CI configuration. Future
-contributors and agents should follow the [local platform scope in AGENTS.md](AGENTS.md#our-version-platform-scope).
+The inherited upstream platform badge, download instructions, and Linux/macOS references below describe
+upstream Horizon, not our fork's support commitment. Existing platform code, workflows, and mandatory
+checks are retained; this record does not authorize removing them, changing build/CI configuration,
+or deployment/release work. Future contributors and agents should follow the
+[local platform scope in AGENTS.md](AGENTS.md#our-version-platform-scope).
 
 ## Download
 
