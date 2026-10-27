@@ -55,6 +55,19 @@ pub(crate) fn secure(stream: TcpStream, key: &Key, role: Role) -> io::Result<Sec
     crypto::secure(stream.try_clone()?, stream, key, role)
 }
 
+pub(crate) fn secure_deadline(
+    stream: crate::Deadline,
+    key: &Key,
+    role: Role,
+) -> io::Result<Secure> {
+    let (read, write) = stream.split()?;
+    let (reader, writer) = crypto::secure(read, write, key, role)?;
+    let (read, make_reader) = reader.into_parts();
+    let (write, make_writer) = writer.into_parts();
+    let (read, write) = crate::Deadline::reunite(read, write)?;
+    Ok((make_reader(read), make_writer(write)))
+}
+
 pub(crate) struct Established {
     pub secure: Secure,
     pub direct: bool,
@@ -219,5 +232,31 @@ mod scope_tests {
             peer_candidates(&candidates, direct::NetworkScope::AllInterfaces).len(),
             2
         );
+    }
+
+    #[test]
+    fn deadline_handoff_keeps_confirmed_cipher_state() {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let guest = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (host, _) = listener.accept().unwrap();
+        let peer = std::thread::spawn(move || -> io::Result<()> {
+            let mut guest = guest;
+            let key = crypto::exchange(&mut guest, "shared secret", "direct", 17)?;
+            let (mut reader, mut writer) = secure(guest, &key, Role::Guest)?;
+            writer.write_data(b"guest payload")?;
+            assert!(
+                matches!(reader.read_frame()?, Some(Frame::Data(data)) if data == b"host payload")
+            );
+            Ok(())
+        });
+        let mut host = crate::deadline(host, Duration::from_secs(5)).unwrap();
+        let key = crypto::exchange(&mut host, "shared secret", "direct", 17).unwrap();
+        let (mut reader, mut writer) = secure_deadline(host, &key, Role::Host).unwrap();
+        assert!(
+            matches!(reader.read_frame().unwrap(), Some(Frame::Data(data)) if data == b"guest payload")
+        );
+        writer.write_data(b"host payload").unwrap();
+        peer.join().unwrap().unwrap();
     }
 }

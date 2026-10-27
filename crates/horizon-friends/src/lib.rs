@@ -8,8 +8,11 @@
 //! local port the guest's client connects to), end-to-end encrypted with a
 //! key only the holders of the code can derive. The design, the protocol and
 //! what the relay sees are in docs/play-with-friends.md.
+#![forbid(unsafe_code)]
+
 pub mod code;
 pub mod crypto;
+mod deadline;
 pub mod direct;
 pub mod guest;
 pub mod host;
@@ -21,15 +24,14 @@ pub mod stun;
 pub mod wire;
 
 pub use code::Code;
+pub use deadline::{Deadline, deadline};
 pub use guest::{JoinError, Tunnel};
 pub use host::{Host, HostConfig, HostEvent, HostState};
 
 use std::{
     io,
-    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
-    sync::mpsc::{RecvTimeoutError, Sender, channel},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     thread::JoinHandle,
-    time::Duration,
 };
 
 /// The game's server address for a friend's world: `friend:K7QM-3XPD`
@@ -40,29 +42,6 @@ pub const ADDRESS_PREFIX: &str = "friend:";
 /// Fill `buf` from the OS random generator.
 pub(crate) fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     getrandom::fill(buf).map_err(|e| io::Error::other(e.to_string()))
-}
-
-/// Ends a stream's opening once its time is up; dropping it first lets the
-/// stream go on. A read timeout alone restarts with every byte, so a peer
-/// sending one byte at a time could hold a handshake (and its slot) for
-/// hours.
-pub struct Deadline {
-    _cancel: Sender<()>,
-}
-
-/// Shut `stream` down after `limit` unless the returned [`Deadline`] is
-/// dropped before.
-pub fn deadline(stream: &TcpStream, limit: Duration) -> io::Result<Deadline> {
-    let stream = stream.try_clone()?;
-    let (tx, rx) = channel::<()>();
-    std::thread::Builder::new()
-        .name("horizon-friends-deadline".into())
-        .spawn(move || {
-            if rx.recv_timeout(limit) == Err(RecvTimeoutError::Timeout) {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-        })?;
-    Ok(Deadline { _cancel: tx })
 }
 
 /// Which paths a session may take (`HORIZON_FRIENDS_PATH`).
@@ -171,14 +150,17 @@ mod tests {
     fn a_deadline_ends_the_stream_unless_dropped() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let _kept = TcpStream::connect(l.local_addr().unwrap()).unwrap();
-        let (mut kept, _) = l.accept().unwrap();
+        let (kept, _) = l.accept().unwrap();
         let _ended = TcpStream::connect(l.local_addr().unwrap()).unwrap();
-        let (mut ended, _) = l.accept().unwrap();
-        drop(deadline(&kept, Duration::from_millis(100)).unwrap());
-        let _running = deadline(&ended, Duration::from_millis(100)).unwrap();
+        let (ended, _) = l.accept().unwrap();
+        let mut kept = deadline(kept, Duration::from_millis(100))
+            .unwrap()
+            .cancel()
+            .unwrap();
         ended
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
+        let mut ended = deadline(ended, Duration::from_millis(100)).unwrap();
         let started = Instant::now();
         assert_eq!(ended.read(&mut [0u8; 1]).unwrap(), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -189,5 +171,131 @@ mod tests {
             e.kind(),
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
         ));
+    }
+
+    #[test]
+    fn deadline_cancel_restores_prior_socket_timeouts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        use std::io::Write;
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let read = Some(Duration::from_millis(500));
+        let write = Some(Duration::from_millis(700));
+        stream.set_read_timeout(read).unwrap();
+        stream.set_write_timeout(write).unwrap();
+        peer.write_all(&[3]).unwrap();
+        let mut bounded = deadline(stream, Duration::from_millis(250)).unwrap();
+        let mut byte = [0];
+        bounded.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [3]);
+        bounded.write_all(&[4]).unwrap();
+        peer.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [4]);
+        let stream = bounded.cancel().unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), read);
+        assert_eq!(stream.write_timeout().unwrap(), write);
+    }
+
+    #[test]
+    fn shorter_socket_timeout_is_preserved_and_terminal() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut bounded = deadline(stream, Duration::from_secs(2)).unwrap();
+        let error = bounded.read(&mut [0; 1]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(bounded.cancel().is_err());
+    }
+
+    #[test]
+    fn deadline_rejects_expired_release_and_overflow() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let bounded = deadline(stream, Duration::ZERO).unwrap();
+        assert_eq!(
+            bounded.cancel().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        assert!(
+            matches!(deadline(stream, Duration::MAX), Err(error) if error.kind() == io::ErrorKind::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn deadline_is_absolute_despite_trickled_bytes() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let worker = std::thread::spawn(move || {
+            for _ in 0..12 {
+                if peer.write_all(&[1]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+        let mut bounded = deadline(stream, Duration::from_millis(120)).unwrap();
+        let started = Instant::now();
+        let mut count = 0;
+        while bounded.read(&mut [0; 1]).unwrap() != 0 {
+            count += 1;
+        }
+        assert!(count > 0);
+        assert!(count < 12);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(bounded.cancel().is_err());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn deadline_preserves_peer_eof_and_rejects_late_write() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut bounded = deadline(stream, Duration::from_secs(2)).unwrap();
+        drop(peer);
+        assert_eq!(bounded.read(&mut [0; 1]).unwrap(), 0);
+        assert!(bounded.cancel().is_ok());
+
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut bounded = deadline(stream, Duration::ZERO).unwrap();
+        assert_eq!(
+            bounded.write(&[1]).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn deadline_bounds_a_stalled_writer() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut bounded = deadline(stream, Duration::from_millis(150)).unwrap();
+        let started = Instant::now();
+        let payload = [7u8; 65536];
+        let error = loop {
+            match bounded.write(&payload) {
+                Ok(n) if n > 0 => {}
+                Ok(_) => panic!("nonempty write made no progress"),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(bounded.cancel().is_err());
     }
 }

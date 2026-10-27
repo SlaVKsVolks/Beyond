@@ -325,7 +325,7 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
     while !shared.stopped() {
         let mut idle = true;
         for l in &listeners {
-            let Ok((mut s, _)) = l.accept() else { continue };
+            let Ok((s, _)) = l.accept() else { continue };
             idle = false;
             if shared.handshakes.load(Ordering::Relaxed) >= MAX_HANDSHAKES {
                 continue;
@@ -336,11 +336,12 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                 .name("horizon-friends-inbound".into())
                 .spawn(move || {
                     let _ = s.set_nonblocking(false);
-                    let Ok(deadline) = crate::deadline(&s, HANDSHAKE) else {
+                    let Ok(mut deadline) = crate::deadline(s, HANDSHAKE) else {
                         shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         return;
                     };
-                    match direct::read_hello(&mut s) {
+                    deadline.limit_read_timeout(Duration::from_secs(5));
+                    match direct::read_hello_from(&mut deadline) {
                         Ok(direct::Hello::Relayed(session)) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                             let route = {
@@ -348,15 +349,15 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                                 routes.retain(|_, (_, until)| *until > Instant::now());
                                 routes.get(&session).map(|(tx, _)| tx.clone())
                             };
-                            if let Some(tx) = route
-                                && direct::answer(&mut s, session).is_ok()
-                            {
+                            let Some(tx) = route else { return };
+                            if direct::answer(&mut deadline, session).is_err() {
+                                return;
+                            }
+                            if let Ok(s) = deadline.cancel() {
                                 let _ = tx.send(s);
                             }
                         }
-                        Ok(direct::Hello::Code(session)) => {
-                            serve_code(&shared, s, session, deadline)
-                        }
+                        Ok(direct::Hello::Code(session)) => serve_code(&shared, deadline, session),
                         Err(_) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         }
@@ -372,7 +373,7 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
 /// A guest who dialled an endpoint from the code: agree on the key from
 /// the code's secret, then carry the session (`deadline` bounds the
 /// handshake, not the game).
-fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: crate::Deadline) {
+fn serve_code(shared: &Arc<Shared>, mut s: crate::Deadline, session: u64) {
     let secret = shared
         .invite
         .lock()
@@ -383,9 +384,8 @@ fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: cr
         let secret = secret.ok_or_else(|| io::Error::other("not ready"))?;
         direct::answer_code(&mut s, session)?;
         let key = crypto::exchange(&mut s, &secret, "direct", session)?;
-        session::secure(s, &key, Role::Host)
+        session::secure_deadline(s, &key, Role::Host)
     })();
-    drop(deadline);
     shared.handshakes.fetch_sub(1, Ordering::Relaxed);
     match secured {
         Ok(secure) => carry(shared, session, secure, true),
