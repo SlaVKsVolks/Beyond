@@ -231,7 +231,7 @@ def apply(actions, report, open_issues):
 
 def issue(action, name, text, number, new):
     """Create or update one issue; its URL."""
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as stream:
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as stream:
         stream.write(text)
     try:
         if action == "create":

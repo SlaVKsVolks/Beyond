@@ -1,4 +1,6 @@
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from functools import partial
+import tempfile
 import unittest
 from unittest import mock
 
@@ -31,6 +33,36 @@ REPORT = {"old": "26.3", "new": "26.4", "summary": {"facts": {"protocol_version"
 
 
 class PublishTests(unittest.TestCase):
+    def test_issue_body_uses_utf8_and_removes_temporary_file(self):
+        text = "Minecraft 26.3 \u2192 26.4"
+        url = "https://github.com/o/r/issues/123"
+        original = tempfile.NamedTemporaryFile
+        for action in ("create", "update"):
+            for fail in (False, True):
+                with self.subTest(action=action, fail=fail), tempfile.TemporaryDirectory() as folder:
+                    bodies = []
+
+                    def gh(*args):
+                        if "--body-file" in args:
+                            path = Path(args[args.index("--body-file") + 1])
+                            bodies.append((path, path.read_bytes()))
+                            if fail:
+                                raise RuntimeError("mock GitHub failure")
+                        return url + "\n"
+
+                    with mock.patch.object(publish.tempfile, "NamedTemporaryFile",
+                                           partial(original, encoding="cp1252", dir=folder)), \
+                         mock.patch.object(publish, "gh", side_effect=gh):
+                        if fail:
+                            with self.assertRaisesRegex(RuntimeError, "mock GitHub failure"):
+                                publish.issue(action, "title", text, 123, "26.4")
+                        else:
+                            self.assertEqual(publish.issue(action, "title", text, 123, "26.4"), url)
+                    self.assertEqual(len(bodies), 1)
+                    path, content = bodies[0]
+                    self.assertEqual(content.decode("utf-8"), text)
+                    self.assertFalse(path.exists())
+
     def test_which_items_get_an_issue(self):
         self.assertEqual([publish.published(i) for i in items()], [True, False, True, True, False, False])
 
