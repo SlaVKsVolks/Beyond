@@ -280,7 +280,13 @@ impl ConnReader {
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
         loop {
             if let Some(frame) = frame::split(&mut self.buffer)? {
+                if frame.is_empty() {
+                    return Err(Error::new("Frame length cannot be zero"));
+                }
                 let body = frame::decompress(frame, self.threshold)?;
+                if body.is_empty() {
+                    continue;
+                }
                 let mut r = Reader::new(&body);
                 let id = r.varint()?;
                 let start = r.position();
@@ -455,6 +461,160 @@ mod tests {
         assert!(c.recv().is_err());
     }
 
+    #[test]
+    fn empty_compressed_envelopes_are_skipped_before_packet() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut connection = Connection::local(receiver);
+        connection.set_compression(64);
+        sender.write_all(&[1, 0, 1, 0, 4, 0, 0, 42, 43]).unwrap();
+        drop(sender);
+        assert_eq!(connection.recv().unwrap(), (0, vec![42, 43]));
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            connection.reader.counters.bytes_in.load(Ordering::Relaxed),
+            9
+        );
+    }
+
+    #[test]
+    fn zero_outer_frame_is_rejected_in_both_modes() {
+        for compression in [false, true] {
+            let (mut sender, receiver) = Pipe::pair();
+            let mut connection = Connection::local(receiver);
+            if compression {
+                connection.set_compression(64);
+            }
+            sender.write_all(&[0]).unwrap();
+            drop(sender);
+            assert!(
+                connection
+                    .recv()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Frame length cannot be zero")
+            );
+            assert_eq!(
+                connection.reader.counters.received.load(Ordering::Relaxed),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn empty_compressed_envelopes_then_closed_pipe_report_eof() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut connection = Connection::local(receiver);
+        connection.set_compression(64);
+        sender.write_all(&[1, 0, 1, 0]).unwrap();
+        drop(sender);
+        assert!(
+            connection
+                .recv()
+                .unwrap_err()
+                .to_string()
+                .contains("Connection closed by the server")
+        );
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            connection.reader.counters.bytes_in.load(Ordering::Relaxed),
+            4
+        );
+    }
+
+    #[test]
+    fn invalid_compressed_length_is_rejected_by_receive() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut connection = Connection::local(receiver);
+        connection.set_compression(64);
+        sender.write_all(&[1, 10]).unwrap();
+        drop(sender);
+        assert!(
+            connection
+                .recv()
+                .unwrap_err()
+                .to_string()
+                .contains("below server threshold")
+        );
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            0
+        );
+    }
+    #[test]
+    fn fragmented_empty_envelope_preserves_buffer_across_timeout() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut connection = Connection::local(receiver);
+        connection.set_compression(64);
+        connection
+            .reader
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        sender.write_all(&[1]).unwrap();
+        assert!(connection.recv().is_err());
+        sender.write_all(&[0, 3, 0, 0, 7]).unwrap();
+        drop(sender);
+        assert_eq!(connection.recv().unwrap(), (0, vec![7]));
+        assert_eq!(
+            connection.reader.counters.bytes_in.load(Ordering::Relaxed),
+            6
+        );
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn encrypted_empty_envelope_is_skipped() {
+        let (mut sender, receiver) = Pipe::pair();
+        let mut connection = Connection::local(receiver);
+        connection.set_compression(64);
+        connection.enable_encryption(&[7; 16]);
+        let mut wire = vec![1, 0, 3, 0, 0, 9];
+        Cfb8::new(&[7; 16], &[7; 16]).encrypt(&mut wire);
+        sender.write_all(&wire).unwrap();
+        drop(sender);
+        assert_eq!(connection.recv().unwrap(), (0, vec![9]));
+        assert_eq!(
+            connection.reader.counters.bytes_in.load(Ordering::Relaxed),
+            6
+        );
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn malformed_compression_lengths_remain_errors_on_receive() {
+        let mismatched = {
+            let mut encoded = frame::encode(&[5; 64], Some(64)).unwrap();
+            encoded[1] = 65;
+            encoded
+        };
+        for wire in [
+            vec![5, 255, 255, 255, 255, 15],
+            vec![4, 129, 128, 128, 4],
+            mismatched,
+        ] {
+            let (mut sender, receiver) = Pipe::pair();
+            let mut connection = Connection::local(receiver);
+            connection.set_compression(64);
+            sender.write_all(&wire).unwrap();
+            drop(sender);
+            assert!(connection.recv().is_err());
+            assert_eq!(
+                connection.reader.counters.received.load(Ordering::Relaxed),
+                0
+            );
+        }
+    }
     #[test]
     fn dropping_a_pipe_end_closes_it() {
         let (a, b) = Pipe::pair();
