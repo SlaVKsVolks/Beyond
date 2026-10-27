@@ -430,9 +430,18 @@ mod tests {
         p.put("motd", " A=B#".into());
         p.put("b key", "é".into());
         let s = p.store(Some("Minecraft server properties"), "DATE", false);
+        let nl = if cfg!(windows) { "\r\n" } else { "\n" };
         assert_eq!(
             s,
-            "#Minecraft server properties\n#DATE\nb\\ key=é\nlevel-type=minecraft\\:normal\nmotd=\\ A\\=B\\#\n"
+            [
+                "#Minecraft server properties",
+                "#DATE",
+                "b\\ key=é",
+                "level-type=minecraft\\:normal",
+                "motd=\\ A\\=B\\#",
+                "",
+            ]
+            .join(nl)
         );
         assert!(p.store(None, "D", true).contains("b\\ key=\\u00E9"));
     }
