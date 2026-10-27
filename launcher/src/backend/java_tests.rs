@@ -38,6 +38,7 @@ fn selected_jdk_reaches_external_preparers() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../crates/horizon-prepare/tests/support/java_probe.rs");
     let output = crate::process::command("rustc")
+        .arg("-Funsafe_code")
         .arg(source)
         .arg("-o")
         .arg(&probe)

@@ -62,6 +62,7 @@ fn selects_a_compatible_compiler_and_runtime() {
     fs::create_dir_all(&root).unwrap();
     let probe = tool(&root, "probe");
     let output = Command::new("rustc")
+        .arg("-Funsafe_code")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/java_probe.rs"))
         .arg("-o")
         .arg(&probe)
