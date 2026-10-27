@@ -30,7 +30,17 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+win32console = "=0.1.5"
+winconsole = "=0.11.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "windows_console"
+path = "tests/windows_console.rs"
+harness = false
+
+[target.'cfg(windows)'.dev-dependencies]
+winconsole = { version = "=0.11.1", features = ["window"] }

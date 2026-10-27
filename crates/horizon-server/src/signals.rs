@@ -26,15 +26,15 @@ pub fn install() {
 }
 
 #[cfg(windows)]
+pub(super) extern "system" fn handle(_: u32) -> i32 {
+    REQUESTS.fetch_add(1, Ordering::SeqCst);
+    1
+}
+
+#[cfg(windows)]
 pub fn install() {
-    unsafe extern "system" fn handle(_: u32) -> windows_sys::core::BOOL {
-        REQUESTS.fetch_add(1, Ordering::SeqCst);
-        1
-    }
-    // SAFETY: the handler only increments an atomic; it stays valid for the life of the process.
-    unsafe {
-        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(handle), 1);
-    }
+    // The static callback counts every event synchronously, including unknown event codes.
+    let _ = winconsole::console::set_ctrl_handler(Some(handle), true);
 }
 
 #[cfg(not(any(unix, windows)))]

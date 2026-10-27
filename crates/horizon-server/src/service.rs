@@ -393,7 +393,12 @@ mod tests {
             Path::new("/srv/R&D"),
         );
         assert!(plist.contains("<string>/srv/R&amp;D</string>"));
-        assert!(plist.contains("<string>/srv/R&amp;D/logs/supervisor.log</string>"));
+        let expected_log = if cfg!(windows) {
+            "<string>/srv/R&amp;D\\logs/supervisor.log</string>"
+        } else {
+            "<string>/srv/R&amp;D/logs/supervisor.log</string>"
+        };
+        assert!(plist.contains(expected_log));
     }
 
     #[cfg(unix)]
