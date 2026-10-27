@@ -4,6 +4,10 @@ Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specificat
 feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
+## Rust assurance
+
+Before Rust changes, record the change contract, invariants and observable checks; obtain independent review for safety, public-contract, concurrency and resource-lifecycle changes. See [docs/rust-assurance.md](docs/rust-assurance.md) for current boundaries and verification limits. Run `python3 tools/check_rust_safety.py` as a scoped guard; a guard pass does not establish full unsafe prohibition or dependency safety.
+
 ## Rules that bite
 
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).

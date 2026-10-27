@@ -1,6 +1,6 @@
 # Rust Compliance Implementation Plan
 
-> **For agentic workers:** Use the assigned isolated worktree and this plan task-by-task; the coordinator integrates and obtains independent review.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans as applicable. Use the assigned isolated worktree; the coordinator integrates and obtains independent review.
 
 **Goal:** Improve Rust assurance without changing Horizon behavior and report the precise remaining compliance gaps.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - No features removed or changed; no checks weakened; no added or relocated first-party unsafe.
-- Preserve edition, MSRV, supported targets/features, Cargo layout and dependencies.
+- Preserve edition, MSRV, supported targets/features, Cargo layout and Rust dependencies. The only authorized dependency addition is Python development backport `tomli==2.0.1; python_version < "3.11"`; no install is authorized.
 - No installs, game runs, deployment, remote writes, branch protection changes or unsafe exceptions.
 - Do not create negative unsafe-code fixtures. Independent review is mandatory for safety, public-contract and concurrency changes.
 
@@ -38,7 +38,7 @@
 
 - [ ] Inventory first-party workspaces and target/lint scope, including separate manifests and non-default targets.
 - [ ] For any new behavioral check, first add focused tests for covered, missing, malformed and unsupported inputs; verify fail-before where practical without writing unsafe fixtures.
-- [ ] Implement the smallest compatible guard without changing dependencies or weakening existing checks; run its focused tests and record exact commands/results.
+- [ ] Implement the smallest compatible guard without changing Rust dependencies or weakening existing checks; run its focused tests and record exact commands/results.
 - [ ] Verify configured guard integration and actual execution separately. Any uncovered target or failed gate remains open.
 
 ### Task 2: Native boundaries
@@ -57,4 +57,4 @@
 
 - [ ] Reconcile the full integration diff with every ledger row and independent review findings.
 - [ ] Run project-prescribed `python3 tools/pr_ready.py --base <verified-base>` and applicable focused checks on the actual integration inputs; retain full output. A missing tool or unsupported environment is NOT RUN/BLOCKED, not PASS.
-- [ ] Record source, configured checks, execution, CI, native runtime and user acceptance independently. No game or native runtime actions are authorized in this pass.
+- [ ] Record source, configured checks, execution, CI, native runtime and user acceptance independently. Routine isolated automated tests are authorized within the contract; installed GUI/game and production runtime acceptance are not.
