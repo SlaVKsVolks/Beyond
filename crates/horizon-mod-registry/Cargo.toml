@@ -10,6 +10,9 @@ description = "The registry's submission service: GitHub sign-in, the file's che
 # Its own workspace, as the telemetry server's: the game's workspace never builds a web server.
 [workspace]
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "multipart"] }

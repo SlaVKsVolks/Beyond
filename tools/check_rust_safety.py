@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Fail-closed Cargo lint audit. Python 3.10 needs requirements-dev.txt installed.
+
+Run `python tools/check_rust_safety.py`; no parser is installed automatically.
+This is manifest coverage, not compiler or runtime proof.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+try:
+    import tomllib as toml_parser
+except ModuleNotFoundError:
+    try:
+        import tomli as toml_parser
+    except ModuleNotFoundError:
+        toml_parser = None
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKSPACES = {Path('Cargo.toml'), Path('launcher/Cargo.toml'),
+              Path('crates/horizon-telemetry-server/Cargo.toml'),
+              Path('crates/horizon-mod-registry/Cargo.toml')}
+SKIP_DIRS = {Path('.git'), Path('.local'), Path('.superpowers'), Path('target'),
+             Path('third_party/wgpu-hal'), Path('launcher/target'),
+             Path('crates/horizon-telemetry-server/target'), Path('crates/horizon-mod-registry/target')}
+
+
+def manifests(root: Path) -> list[Path]:
+    found: list[Path] = []
+    def fail_walk(error: OSError) -> None:
+        raise error
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
+        for name in dirs:
+            if (Path(directory) / name).is_symlink():
+                raise ValueError(f'symlink directory requires manual scope review: {Path(directory) / name}')
+        dirs[:] = [name for name in dirs if (Path(directory) / name).relative_to(root) not in SKIP_DIRS]
+        if 'Cargo.toml' in files:
+            if (Path(directory) / 'Cargo.toml').is_symlink():
+                raise ValueError(f"symlink manifest requires manual scope review: {Path(directory) / 'Cargo.toml'}")
+            found.append((Path(directory) / 'Cargo.toml').relative_to(root))
+    return sorted(found)
+
+
+def read_manifest(path: Path) -> dict[str, object]:
+    if toml_parser is None:
+        raise RuntimeError('TOML parser unavailable; install tomli via requirements-dev.txt for Python 3.10')
+    with path.open('rb') as source:
+        return toml_parser.load(source)
+
+
+def table(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def forbid(value: object) -> bool:
+    return value == 'forbid' or (isinstance(value, dict) and value.get('level') == 'forbid')
+
+
+def audit(root: Path, expected: set[Path]) -> list[str]:
+    if toml_parser is None:
+        return ['TOML parser unavailable; install tomli via requirements-dev.txt for Python 3.10']
+    root = root.resolve()
+    issues: list[str] = []
+    try:
+        paths = manifests(root)
+        parsed = {path: read_manifest(root / path) for path in paths}
+    except (OSError, ValueError) as error:
+        return [f'manifest discovery/parsing failed: {error}']
+    direct_rustc_inputs = (
+        Path('launcher/tests/support/console_probe.rs'),
+        Path('crates/horizon-prepare/tests/support/java_probe.rs'),
+        Path('tests/test_world_input_capture.py'),
+        Path('tests/test_remote_mining.py'),
+    )
+    for path in direct_rustc_inputs:
+        if (root / path).exists():
+            issues.append(f'{path}: independently compiled by rustc or generates rustc input; Cargo lint coverage does not apply')
+    roots = {path for path, data in parsed.items() if 'workspace' in data}
+    for path in sorted(roots - expected):
+        issues.append(f'unexpected workspace requires review: {path}')
+    for path in sorted(expected - roots):
+        issues.append(f'expected workspace missing: {path}')
+    packages = {path for path, data in parsed.items() if 'package' in data}
+    covered: set[Path] = set()
+    for workspace in sorted(roots & expected):
+        try:
+            result = subprocess.run(['cargo', 'metadata', '--offline', '--locked', '--no-deps',
+                                     '--format-version', '1', '--manifest-path', str(root / workspace)],
+                                    cwd=root, capture_output=True, text=True, check=True)
+            metadata = json.loads(result.stdout)
+            member_ids = set(metadata['workspace_members'])
+            members = [p for p in metadata['packages'] if p['id'] in member_ids]
+            if len(members) != len(member_ids):
+                raise ValueError('metadata omitted workspace members')
+            for package in members:
+                path = Path(package['manifest_path']).resolve().relative_to(root)
+                if path not in packages or path in covered:
+                    raise ValueError(f'unknown or duplicate package: {path}')
+                if not package['targets']:
+                    raise ValueError(f'package has no Cargo targets: {path}')
+                covered.add(path)
+                lints = table(parsed[path].get('lints'))
+                if lints.get('workspace') is True:
+                    lints = table(table(parsed[workspace].get('workspace')).get('lints'))
+                rust = table(lints.get('rust'))
+                if not forbid(rust.get('unsafe_code')):
+                    issues.append(f'{path}: package unsafe_code forbid missing; {len(package["targets"])} targets require audit')
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) and error.stderr else str(error)
+            issues.append(f'{workspace}: Cargo metadata failed: {detail}')
+    for path in sorted(packages - covered):
+        issues.append(f'{path}: first-party package is not covered by an audited workspace')
+    return issues
+
+
+def main() -> int:
+    issues = audit(ROOT, WORKSPACES)
+    if issues:
+        print('Rust safety assurance FAIL:')
+        for issue in issues:
+            print(f'  {issue}')
+        return 1
+    print('Rust safety manifest coverage PASS; compiler, platform and runtime checks remain separate.')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

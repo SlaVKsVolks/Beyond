@@ -307,6 +307,7 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     steps = [
         Step("Cargo.lock", where="git"),
         Step("Public tree", "python3 tools/check_public_tree.py", where="here"),
+        Step("Rust safety assurance", "python3 tools/check_rust_safety.py", where="here"),
         Step("Python tests", "python3 -m unittest discover -s tests", where="here",
              skip=None if python else "no Python change", summary=unittest_passed),
         Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),

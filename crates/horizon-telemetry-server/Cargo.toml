@@ -10,6 +10,9 @@ description = "Receives opt-in data collection batches, keeps them compactly in 
 # Its own workspace, as the launcher's: the game's workspace never builds a web server.
 [workspace]
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
