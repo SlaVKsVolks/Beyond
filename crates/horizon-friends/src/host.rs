@@ -645,7 +645,14 @@ fn serve_relayed(
     control: &TcpStream,
 ) {
     let config = &shared.config;
-    let Ok((mut stream, _)) = connect_relay(relay_url, port, shared.scope) else {
+    // Loopback needs no NAT mapping. An ephemeral attach port also avoids
+    // reusing a previous connection's tuple to the same local relay.
+    let attach_port = if shared.scope == direct::NetworkScope::Loopback {
+        None
+    } else {
+        port
+    };
+    let Ok((mut stream, _)) = connect_relay(relay_url, attach_port, shared.scope) else {
         return;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));

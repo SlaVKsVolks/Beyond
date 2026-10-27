@@ -370,6 +370,19 @@ mod tests {
         assert_eq!(found, vec![SocketAddr::from(([127, 0, 0, 1], 1234))]);
     }
 
+    #[test]
+    fn repeated_connections_to_same_relay_fall_back_to_a_free_port() {
+        let (_source, source_port) = listen_loopback().unwrap();
+        let (_relay, relay_port) = listen_loopback().unwrap();
+        let relay = SocketAddr::from(([127, 0, 0, 1], relay_port));
+        let first = connect_from(Some(source_port), relay, Duration::from_secs(1)).unwrap();
+        let second = connect_from(Some(source_port), relay, Duration::from_secs(1)).unwrap();
+        assert_ne!(
+            first.local_addr().unwrap().port(),
+            second.local_addr().unwrap().port()
+        );
+    }
+
     fn listen_loopback() -> io::Result<(Vec<TcpListener>, u16)> {
         let result = listen_with_scope(0, NetworkScope::Loopback)?;
         for listener in &result.0 {
