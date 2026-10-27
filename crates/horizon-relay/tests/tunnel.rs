@@ -12,7 +12,7 @@ use horizon_friends::{
 use horizon_relay::{Config, Relay, limits::Rates};
 use std::{
     cell::RefCell,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     time::{Duration, Instant},
 };
@@ -442,6 +442,52 @@ fn health_and_whoami_answer_http() {
     assert!(health.ends_with("{\"ok\":true,\"hosts\":0,\"bridges\":0,\"registrations\":0,\"joins\":0,\"unknown\":0,\"rate_limited\":0,\"relayed_bytes\":0}"));
     assert!(get("/whoami").contains("\"address\":\"127.0.0.1:"));
     assert!(get("/").starts_with("HTTP/1.1 404"));
+}
+
+/// HTTP headers share the absolute first-line deadline.
+#[test]
+fn slow_http_headers_are_closed_within_the_first_line_deadline() {
+    let (_relay, address) = relay(Config {
+        first_line: Duration::from_secs(1),
+        ..Config::default()
+    });
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream.write_all(b"GET /health HTTP/1.1\r\n").unwrap();
+    let started = Instant::now();
+    let mut write_closed = false;
+    while started.elapsed() < Duration::from_secs(3) {
+        if let Err(error) = stream.write_all(b"x") {
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            ));
+            write_closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        write_closed,
+        "relay did not close the incomplete HTTP request"
+    );
+    let mut response = [0u8; 1];
+    match stream.read(&mut response) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+            ) => {}
+        result => panic!("expected closed connection, got {result:?}"),
+    }
+    assert!(started.elapsed() < Duration::from_secs(3));
 }
 
 /// A first line trickled a byte at a time still has to arrive within
