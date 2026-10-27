@@ -176,6 +176,7 @@ mod tests {
         let (mut ended, _) = l.accept().unwrap();
         drop(deadline(&kept, Duration::from_millis(100)).unwrap());
         let _running = deadline(&ended, Duration::from_millis(100)).unwrap();
+        ended.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let started = Instant::now();
         assert_eq!(ended.read(&mut [0u8; 1]).unwrap(), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
