@@ -64,6 +64,37 @@ pub(crate) struct Established {
 /// introduced) into the sender until the deadline or the stop flag.
 pub(crate) type Listen<'a> = Box<dyn FnOnce(Sender<TcpStream>, Instant, Arc<AtomicBool>) + 'a>;
 
+fn peer_candidates(theirs: &[String], scope: direct::NetworkScope) -> Vec<SocketAddr> {
+    theirs
+        .iter()
+        .filter_map(|a| a.parse().ok())
+        .take(16)
+        .filter(|a| scope.allows(*a))
+        .collect()
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_scope_filters_peer_candidates() {
+        let candidates = vec![
+            "192.0.2.1:1234".into(),
+            "127.0.0.1:4321".into(),
+            "invalid".into(),
+        ];
+        assert_eq!(
+            peer_candidates(&candidates, direct::NetworkScope::Loopback),
+            vec![SocketAddr::from(([127, 0, 0, 1], 4321))]
+        );
+        assert_eq!(
+            peer_candidates(&candidates, direct::NetworkScope::AllInterfaces).len(),
+            2
+        );
+    }
+}
+
 /// Settle a session on the relayed stream `relay` (already protected) or a
 /// direct one.
 pub(crate) fn settle(
@@ -74,6 +105,7 @@ pub(crate) fn settle(
     session: u64,
     direct_port: Option<u16>,
     candidates: Vec<SocketAddr>,
+    scope: direct::NetworkScope,
     listen: Listen<'_>,
 ) -> io::Result<Established> {
     let (mut rr, mut rw) = relay;
@@ -98,11 +130,7 @@ pub(crate) fn settle(
     else {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected hello"));
     };
-    let theirs: Vec<SocketAddr> = theirs
-        .iter()
-        .filter_map(|a| a.parse().ok())
-        .take(16)
-        .collect();
+    let theirs = peer_candidates(&theirs, scope);
     let stop = Arc::new(AtomicBool::new(false));
     let (atx, arx) = channel::<Secure>();
     if wants && they_want {

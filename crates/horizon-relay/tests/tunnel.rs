@@ -4,6 +4,7 @@
 //! tests against mock routers and servers in horizon-friends.
 use horizon_friends::{
     Code, Host, HostConfig, HostEvent, JoinError, PathMode,
+    direct::NetworkScope,
     guest::{self, GuestConfig},
     invite::{self, Invite, Parsed},
     reach,
@@ -22,6 +23,7 @@ const PROTOCOL: i32 = 777;
 fn echo_server() -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let a = l.local_addr().unwrap();
+    assert!(a.ip().is_loopback());
     std::thread::spawn(move || {
         for s in l.incoming() {
             let Ok(mut s) = s else { continue };
@@ -51,19 +53,22 @@ fn generous() -> Config {
 }
 
 fn start(relay: Option<&str>, path: PathMode) -> Host {
-    Host::start(HostConfig {
-        lan: echo_server(),
-        protocol: PROTOCOL,
-        game: "26.3".into(),
-        relay: relay.map(str::to_owned),
-        path,
-        port: 0,
-        reach: reach::Options {
-            map_port: false,
-            stun: Vec::new(),
-            loopback: true,
+    Host::start_with_scope(
+        HostConfig {
+            lan: echo_server(),
+            protocol: PROTOCOL,
+            game: "26.3".into(),
+            relay: relay.map(str::to_owned),
+            path,
+            port: 0,
+            reach: reach::Options {
+                map_port: false,
+                stun: Vec::new(),
+                loopback: true,
+            },
         },
-    })
+        NetworkScope::Loopback,
+    )
     .unwrap()
 }
 
@@ -105,13 +110,16 @@ fn invite_of(host: &Host, with_relay: bool) -> (String, Option<Code>) {
 }
 
 fn join(code: &str, relay: Option<&str>, path: PathMode) -> Result<guest::Tunnel, JoinError> {
-    guest::join(&GuestConfig {
-        code: code.to_owned(),
-        relay: relay.map(str::to_owned),
-        protocol: PROTOCOL,
-        game: "26.3".into(),
-        path,
-    })
+    guest::join_with_scope(
+        &GuestConfig {
+            code: code.to_owned(),
+            relay: relay.map(str::to_owned),
+            protocol: PROTOCOL,
+            game: "26.3".into(),
+            path,
+        },
+        NetworkScope::Loopback,
+    )
 }
 
 /// What the game's client does: connect to the loopback port, send, read
@@ -300,13 +308,16 @@ fn bad_codes_unknown_codes_versions_and_ended_invites() {
     let mut host = start(Some(&address), PathMode::RelayOnly);
     let (_, short) = invite_of(&host, true);
     let short = short.unwrap();
-    let other = guest::join(&GuestConfig {
-        code: short.to_string(),
-        relay: Some(address.clone()),
-        protocol: PROTOCOL - 1,
-        game: "26.2".into(),
-        path: PathMode::Auto,
-    });
+    let other = guest::join_with_scope(
+        &GuestConfig {
+            code: short.to_string(),
+            relay: Some(address.clone()),
+            protocol: PROTOCOL - 1,
+            game: "26.2".into(),
+            path: PathMode::Auto,
+        },
+        NetworkScope::Loopback,
+    );
     match other {
         Err(e @ JoinError::VersionMismatch { .. }) => {
             assert_eq!(

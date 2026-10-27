@@ -5,7 +5,7 @@
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
-        Lan,
+        Lan, NetConfig,
         chunks::ChunkEncoder,
         data::SyncData,
         entity::EntityState,
@@ -41,6 +41,18 @@ fn resources() -> Option<std::path::PathBuf> {
 }
 
 const STONE: u32 = 1;
+
+fn test_listener() -> std::net::TcpListener {
+    let listener = Lan::bind(Some(std::net::Ipv4Addr::LOCALHOST.into()), 0).unwrap();
+    assert!(listener.local_addr().unwrap().ip().is_loopback());
+    listener
+}
+
+#[test]
+fn test_listener_is_bound_to_loopback() {
+    let listener = test_listener();
+    assert!(listener.local_addr().unwrap().ip().is_loopback());
+}
 
 fn flat_world() -> World {
     let mut world = World::new(BlockStateId(0), 0);
@@ -224,7 +236,12 @@ impl Server {
 
 fn server(resources: &Path) -> Server {
     let sync = Arc::new(SyncData::load(resources).expect("sync data"));
-    let lan = Lan::start(sync.clone(), 0, "Test - World".into(), 8).unwrap();
+    let listener = test_listener();
+    let mut net = NetConfig::lan(0, "Test - World".into(), 8);
+    net.listen = false;
+    net.announce = false;
+    let mut lan = Lan::start_with(sync.clone(), net).unwrap();
+    lan.listen_on(listener, false).unwrap();
     let biomes: Vec<String> = sync
         .dynamic
         .registries

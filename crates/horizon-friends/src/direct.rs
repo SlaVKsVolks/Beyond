@@ -47,6 +47,53 @@ fn unspecified(v6: bool, port: u16) -> SocketAddr {
 /// The direct socket's listeners: IPv4 on `port` (0 picks one), and IPv6 on
 /// the same port when the system has it.
 pub fn listen(port: u16) -> io::Result<(Vec<TcpListener>, u16)> {
+    listen_with_scope(port, NetworkScope::AllInterfaces)
+}
+
+/// The network scope for direct connections and discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkScope {
+    /// Accept on all local interfaces, as the normal host and guest do.
+    AllInterfaces,
+    /// Restrict listeners and connection candidates to this machine; do not discover external addresses.
+    Loopback,
+}
+
+impl NetworkScope {
+    pub(crate) fn allows(self, address: SocketAddr) -> bool {
+        self == Self::AllInterfaces || address.ip().is_loopback()
+    }
+
+    pub(crate) fn resolve_relay(self, url: &str) -> io::Result<Vec<SocketAddr>> {
+        if self == Self::AllInterfaces {
+            return crate::resolve_relay(url);
+        }
+        let address = url
+            .trim()
+            .trim_start_matches("tcp://")
+            .trim_end_matches('/');
+        let address: SocketAddr = address.parse().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "loopback relay must be a literal socket address",
+            )
+        })?;
+        if !self.allows(address) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay is not loopback",
+            ));
+        }
+        Ok(vec![address])
+    }
+}
+
+/// Bind the direct listeners to the selected interfaces.
+pub fn listen_with_scope(port: u16, mode: NetworkScope) -> io::Result<(Vec<TcpListener>, u16)> {
+    let (ipv4, ipv6) = match mode {
+        NetworkScope::AllInterfaces => (Ipv4Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED),
+        NetworkScope::Loopback => (Ipv4Addr::LOCALHOST, Ipv6Addr::LOCALHOST),
+    };
     let bind = |addr: SocketAddr| -> io::Result<TcpListener> {
         let s = socket_for(&addr)?;
         s.bind(&SockAddr::from(addr))?;
@@ -55,11 +102,21 @@ pub fn listen(port: u16) -> io::Result<(Vec<TcpListener>, u16)> {
         l.set_nonblocking(true)?;
         Ok(l)
     };
-    let v4 = bind(unspecified(false, port))?;
+    let v4 = bind(SocketAddr::new(IpAddr::V4(ipv4), port))?;
     let port = v4.local_addr()?.port();
     let mut out = vec![v4];
-    if let Ok(v6) = bind(unspecified(true, port)) {
+    if let Ok(v6) = bind(SocketAddr::new(IpAddr::V6(ipv6), port)) {
         out.push(v6);
+    }
+    if mode == NetworkScope::Loopback {
+        for listener in &out {
+            if !listener.local_addr()?.ip().is_loopback() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "loopback listener bound outside loopback",
+                ));
+            }
+        }
     }
     Ok((out, port))
 }
@@ -108,6 +165,26 @@ pub fn candidates(
     }
     out.truncate(crate::invite::MAX_ENDPOINTS);
     out
+}
+
+pub(crate) fn scoped_candidates(
+    scope: NetworkScope,
+    port: u16,
+    relay: Option<SocketAddr>,
+    observed: Option<SocketAddr>,
+) -> Vec<SocketAddr> {
+    candidates_with_scope(scope, port, || candidates(port, relay, observed))
+}
+
+fn candidates_with_scope(
+    scope: NetworkScope,
+    port: u16,
+    discover: impl FnOnce() -> Vec<SocketAddr>,
+) -> Vec<SocketAddr> {
+    match scope {
+        NetworkScope::AllInterfaces => discover(),
+        NetworkScope::Loopback => vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))],
+    }
 }
 
 /// Both ends open every direct stream the same way, whoever dialled: the
@@ -272,6 +349,47 @@ mod tests {
     use std::sync::mpsc::channel;
 
     #[test]
+    fn loopback_scope_rejects_remote_and_hostname_relays() {
+        let scope = NetworkScope::Loopback;
+        assert!(scope.allows(SocketAddr::from(([127, 0, 0, 1], 42))));
+        assert!(!scope.allows(SocketAddr::from(([192, 0, 2, 1], 42))));
+        assert_eq!(
+            scope.resolve_relay("tcp://127.0.0.1:42/").unwrap(),
+            vec![SocketAddr::from(([127, 0, 0, 1], 42))]
+        );
+        assert!(scope.resolve_relay("192.0.2.1:42").is_err());
+        assert!(scope.resolve_relay("localhost:42").is_err());
+        assert!(NetworkScope::AllInterfaces.allows(SocketAddr::from(([192, 0, 2, 1], 42))));
+    }
+
+    #[test]
+    fn loopback_candidates_do_not_enumerate_other_interfaces() {
+        let found = candidates_with_scope(NetworkScope::Loopback, 1234, || {
+            panic!("loopback candidates must not enumerate interfaces")
+        });
+        assert_eq!(found, vec![SocketAddr::from(([127, 0, 0, 1], 1234))]);
+    }
+
+    fn listen_loopback() -> io::Result<(Vec<TcpListener>, u16)> {
+        let result = listen_with_scope(0, NetworkScope::Loopback)?;
+        for listener in &result.0 {
+            assert!(listener.local_addr()?.ip().is_loopback());
+        }
+        Ok(result)
+    }
+
+    #[test]
+    fn production_listeners_bind_unspecified_addresses() {
+        let (listeners, port) = listen(0).unwrap();
+        assert!(!listeners.is_empty());
+        for listener in listeners {
+            let addr = listener.local_addr().unwrap();
+            assert!(addr.ip().is_unspecified());
+            assert_eq!(addr.port(), port);
+        }
+    }
+
+    #[test]
     fn candidates_have_the_port_and_the_observed_address() {
         let relay = SocketAddr::from(([127, 0, 0, 1], 1));
         let observed = SocketAddr::from(([203, 0, 113, 5], 40000));
@@ -290,8 +408,11 @@ mod tests {
     /// don't.
     #[test]
     fn the_race_connects_and_checks_the_session() {
-        let (la, pa) = listen(0).unwrap();
-        let (lb, pb) = listen(0).unwrap();
+        let (la, pa) = listen_loopback().unwrap();
+        let (lb, pb) = listen_loopback().unwrap();
+        for listener in la.iter().chain(&lb) {
+            assert!(listener.local_addr().unwrap().ip().is_loopback());
+        }
         assert_ne!(pa, pb);
         let stop = Arc::new(AtomicBool::new(false));
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -315,7 +436,7 @@ mod tests {
         assert_eq!(&got, b"ping");
         stop.store(true, Ordering::Relaxed);
 
-        let (lc, pc) = listen(0).unwrap();
+        let (lc, pc) = listen_loopback().unwrap();
         let (tc, rc) = channel();
         let deadline = Instant::now() + Duration::from_millis(800);
         let stop = Arc::new(AtomicBool::new(false));

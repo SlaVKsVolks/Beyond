@@ -12,7 +12,7 @@ use crate::{
     direct,
     invite::{Invite, RelayRef},
     reach::{self, Reach, Verdict},
-    resolve_relay, session,
+    session,
     wire::{self, FromRelay, ToRelay},
 };
 use std::{
@@ -90,6 +90,7 @@ pub enum HostEvent {
 
 struct Shared {
     config: HostConfig,
+    scope: direct::NetworkScope,
     stop: AtomicBool,
     state: Mutex<HostState>,
     events: Mutex<Sender<HostEvent>>,
@@ -148,10 +149,29 @@ impl Host {
     /// Start sharing in the background: the code arrives as an event once
     /// the host knows its addresses (a few seconds).
     pub fn start(config: HostConfig) -> io::Result<Self> {
+        Self::start_with_scope(config, direct::NetworkScope::AllInterfaces)
+    }
+
+    /// Start sharing within the selected network scope. Loopback scope requires
+    /// a loopback LAN server and does not perform external reachability discovery.
+    pub fn start_with_scope(config: HostConfig, bind: direct::NetworkScope) -> io::Result<Self> {
+        if !bind.allows(config.lan) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LAN server is not loopback",
+            ));
+        }
+        if bind == direct::NetworkScope::Loopback {
+            if let Some(relay) = &config.relay {
+                bind.resolve_relay(relay)?;
+            }
+        }
         let (tx, events) = channel();
-        let (listeners, port) = direct::listen(config.port).or_else(|_| direct::listen(0))?;
+        let (listeners, port) = direct::listen_with_scope(config.port, bind)
+            .or_else(|_| direct::listen_with_scope(0, bind))?;
         let shared = Arc::new(Shared {
             config,
+            scope: bind,
             stop: AtomicBool::new(false),
             state: Mutex::new(HostState {
                 port,
@@ -220,16 +240,125 @@ impl Drop for Host {
 
 /// Find the addresses, publish the code, keep the router mapping alive,
 /// serve the relay when there is one.
-fn share(shared: Arc<Shared>, port: u16) {
-    let config = &shared.config;
-    let reach = if config.path == PathMode::RelayOnly {
+fn scoped_reach(
+    port: u16,
+    path: PathMode,
+    scope: direct::NetworkScope,
+    discover: impl FnOnce() -> Reach,
+) -> Reach {
+    if path == PathMode::RelayOnly {
         Reach {
             port,
             ..Reach::default()
         }
+    } else if scope == direct::NetworkScope::Loopback {
+        Reach {
+            port,
+            local: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            ..Reach::default()
+        }
     } else {
+        discover()
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_scope_does_not_discover_external_addresses() {
+        let reach = scoped_reach(1234, PathMode::Auto, direct::NetworkScope::Loopback, || {
+            panic!("external discovery must not run")
+        });
+        assert_eq!(
+            reach.endpoints(),
+            vec![SocketAddr::from(([127, 0, 0, 1], 1234))]
+        );
+    }
+
+    #[test]
+    fn loopback_scope_rejects_remote_lan_before_starting() {
+        let config = HostConfig {
+            lan: SocketAddr::from(([192, 0, 2, 1], 1234)),
+            protocol: 777,
+            game: "test".into(),
+            relay: None,
+            path: PathMode::Auto,
+            port: 0,
+            reach: reach::Options {
+                map_port: false,
+                stun: vec![],
+                loopback: true,
+            },
+        };
+        assert_eq!(
+            Host::start_with_scope(config, direct::NetworkScope::Loopback)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn loopback_scope_rejects_nonlocal_relay_before_starting() {
+        for relay in ["192.0.2.1:1234", "localhost:1234"] {
+            let config = HostConfig {
+                lan: SocketAddr::from(([127, 0, 0, 1], 1)),
+                protocol: 777,
+                game: "test".into(),
+                relay: Some(relay.into()),
+                path: PathMode::Auto,
+                port: 0,
+                reach: reach::Options {
+                    map_port: false,
+                    stun: vec![],
+                    loopback: true,
+                },
+            };
+            assert_eq!(
+                Host::start_with_scope(config, direct::NetworkScope::Loopback)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn occupied_requested_port_falls_back_and_stop_releases_listener() {
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let requested = occupied.local_addr().unwrap().port();
+        let config = HostConfig {
+            lan: SocketAddr::from(([127, 0, 0, 1], 1)),
+            protocol: 777,
+            game: "test".into(),
+            relay: None,
+            path: PathMode::Auto,
+            port: requested,
+            reach: reach::Options {
+                map_port: false,
+                stun: vec![],
+                loopback: true,
+            },
+        };
+        let mut host = Host::start_with_scope(config, direct::NetworkScope::Loopback).unwrap();
+        let actual = host.state().port;
+        assert_ne!(actual, requested);
+        host.stop();
+        let (listeners, _) =
+            direct::listen_with_scope(actual, direct::NetworkScope::Loopback).unwrap();
+        drop(listeners);
+    }
+}
+
+fn share(shared: Arc<Shared>, port: u16) {
+    let config = &shared.config;
+    let reach = scoped_reach(port, config.path, shared.scope, || {
         Reach::discover(port, &config.reach)
-    };
+    });
     let endpoints = if config.path == PathMode::RelayOnly {
         Vec::new()
     } else {
@@ -243,6 +372,8 @@ fn share(shared: Arc<Shared>, port: u16) {
         let mut s = shared.state.lock().unwrap();
         s.summary = if config.path == PathMode::RelayOnly {
             "Friends join through the relay only.".into()
+        } else if shared.scope == direct::NetworkScope::Loopback {
+            "Friends on this computer can join.".into()
         } else {
             reach.summary()
         };
@@ -382,9 +513,13 @@ fn carry(shared: &Arc<Shared>, session: u64, (r, w): session::Secure, direct: bo
 
 // ----- The relay (optional) ---------------------------------------------------------------------
 
-fn connect_relay(relay: &str, port: Option<u16>) -> io::Result<(TcpStream, SocketAddr)> {
+fn connect_relay(
+    relay: &str,
+    port: Option<u16>,
+    scope: direct::NetworkScope,
+) -> io::Result<(TcpStream, SocketAddr)> {
     let mut last = io::Error::other("no address");
-    for address in resolve_relay(relay)? {
+    for address in scope.resolve_relay(relay)? {
         match direct::connect_from(port, address, Duration::from_secs(5)) {
             Ok(s) => {
                 let _ = s.set_nodelay(true);
@@ -428,7 +563,7 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
     let port = Some(shared.state.lock().unwrap().port);
     // The control connection uses any port: the direct port stays free for
     // the attach connections, whose observed address is the one that counts.
-    let (mut control, relay) = connect_relay(relay_url, None)?;
+    let (mut control, relay) = connect_relay(relay_url, None, shared.scope)?;
     control.set_read_timeout(Some(Duration::from_secs(70)))?;
     wire::send(
         &mut control,
@@ -510,7 +645,7 @@ fn serve_relayed(
     control: &TcpStream,
 ) {
     let config = &shared.config;
-    let Ok((mut stream, _)) = connect_relay(relay_url, port) else {
+    let Ok((mut stream, _)) = connect_relay(relay_url, port, shared.scope) else {
         return;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
@@ -546,7 +681,9 @@ fn serve_relayed(
             return;
         }
     };
-    let candidates = port.map_or_else(Vec::new, |p| direct::candidates(p, Some(relay), observed));
+    let candidates = port.map_or_else(Vec::new, |p| {
+        direct::scoped_candidates(shared.scope, p, Some(relay), observed)
+    });
     let routes = shared.clone();
     let settled = session::settle(
         relayed,
@@ -556,6 +693,7 @@ fn serve_relayed(
         session,
         port,
         candidates,
+        shared.scope,
         Box::new(move |tx, deadline, _stop| {
             routes
                 .routes

@@ -6,7 +6,6 @@ use crate::{
     crypto::{self, Role},
     direct,
     invite::{Invite, Parsed},
-    resolve_relay,
     session::{self, Secure},
     wire::{self, ErrorCode, FromRelay, ToRelay},
 };
@@ -111,21 +110,30 @@ pub struct Tunnel {
 /// (every endpoint at once), then through the relay it names, if any; a
 /// short code goes through the configured relay. Blocks for a few seconds.
 pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
+    join_with_scope(config, direct::NetworkScope::AllInterfaces)
+}
+
+/// Join within the selected network scope. Loopback scope rejects non-loopback
+/// relay addresses and excludes non-loopback direct candidates.
+pub fn join_with_scope(
+    config: &GuestConfig,
+    bind: direct::NetworkScope,
+) -> Result<Tunnel, JoinError> {
     match crate::invite::parse_detailed(&config.code).map_err(JoinError::BadCode)? {
         Parsed::Short(code) => {
             let relay = config.relay.as_deref().ok_or(JoinError::NeedsRelay)?;
-            join_relay(config, relay, &code)
+            join_relay(config, relay, &code, bind)
         }
         Parsed::Long(invite) => {
             if config.path != PathMode::RelayOnly
                 && !invite.endpoints.is_empty()
-                && let Some(t) = join_direct(&invite)?
+                && let Some(t) = join_direct(&invite, bind)?
             {
                 return Ok(t);
             }
             match &invite.relay {
                 Some(r) if config.path != PathMode::DirectOnly => {
-                    join_relay(config, &r.address, &r.code)
+                    join_relay(config, &r.address, &r.code, bind)
                 }
                 _ => Err(JoinError::NotReachable),
             }
@@ -135,13 +143,16 @@ pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
 
 /// Dial every endpoint of the code; the first that answers as a Horizon
 /// host gets the handshake, the others are dropped before it.
-fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
+fn join_direct(invite: &Invite, scope: direct::NetworkScope) -> Result<Option<Tunnel>, JoinError> {
     let (tx, rx) = channel();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut session = [0u8; 8];
     crate::fill_random(&mut session).map_err(|e| JoinError::Failed(e.to_string()))?;
     let session = u64::from_le_bytes(session);
     for &endpoint in &invite.endpoints {
+        if !scope.allows(endpoint) {
+            continue;
+        }
         let tx = tx.clone();
         let _ = std::thread::Builder::new()
             .name("horizon-friends-dial".into())
@@ -175,11 +186,18 @@ fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
 
 /// Through a relay with its short code (its own direct race, then the
 /// relay's byte stream).
-fn join_relay(config: &GuestConfig, relay_url: &str, code: &Code) -> Result<Tunnel, JoinError> {
-    let relays = resolve_relay(relay_url).map_err(|e| JoinError::Unreachable(e.to_string()))?;
+fn join_relay(
+    config: &GuestConfig,
+    relay_url: &str,
+    code: &Code,
+    bind: direct::NetworkScope,
+) -> Result<Tunnel, JoinError> {
+    let relays = bind
+        .resolve_relay(relay_url)
+        .map_err(|e| JoinError::Unreachable(e.to_string()))?;
     let direct_allowed = config.path != PathMode::RelayOnly;
     let (listeners, port) = if direct_allowed {
-        match direct::listen(0) {
+        match direct::listen_with_scope(0, bind) {
             Ok((l, p)) => (l, Some(p)),
             Err(_) => (Vec::new(), None),
         }
@@ -241,7 +259,9 @@ fn join_relay(config: &GuestConfig, relay_url: &str, code: &Code) -> Result<Tunn
         }
     })?;
     let observed = observed.and_then(|o| o.parse::<SocketAddr>().ok());
-    let candidates = port.map_or_else(Vec::new, |p| direct::candidates(p, Some(relay), observed));
+    let candidates = port.map_or_else(Vec::new, |p| {
+        direct::scoped_candidates(bind, p, Some(relay), observed)
+    });
     let settled = session::settle(
         relayed,
         &key,
@@ -250,6 +270,7 @@ fn join_relay(config: &GuestConfig, relay_url: &str, code: &Code) -> Result<Tunn
         session,
         port,
         candidates,
+        bind,
         Box::new(move |tx, deadline, stop| direct::accept(listeners, session, deadline, stop, tx)),
     )
     .map_err(|e| JoinError::Failed(e.to_string()))?;
