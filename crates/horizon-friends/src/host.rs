@@ -161,10 +161,8 @@ impl Host {
                 "LAN server is not loopback",
             ));
         }
-        if bind == direct::NetworkScope::Loopback {
-            if let Some(relay) = &config.relay {
-                bind.resolve_relay(relay)?;
-            }
+        if let (direct::NetworkScope::Loopback, Some(relay)) = (bind, &config.relay) {
+            bind.resolve_relay(relay)?;
         }
         let (tx, events) = channel();
         let (listeners, port) = direct::listen_with_scope(config.port, bind)
