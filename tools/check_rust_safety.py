@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 
 try:
@@ -29,19 +30,51 @@ SKIP_DIRS = {Path('.git'), Path('.local'), Path('.superpowers'), Path('target'),
              Path('crates/horizon-telemetry-server/target'), Path('crates/horizon-mod-registry/target')}
 
 
+def reject_links(path: Path) -> None:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f'symlink requires manual scope review: {path}')
+    if getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400):
+        raise ValueError(f'reparse point requires manual scope review: {path}')
+
+
+def contained_path(root: Path, value: object, label: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f'{label}: missing or invalid path')
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise ValueError(f'{label}: Cargo returned a relative path: {candidate}')
+    try:
+        parts = candidate.relative_to(root).parts
+    except ValueError as error:
+        raise ValueError(f'{label}: outside project root: {candidate}') from error
+    current = root
+    for part in parts:
+        if part == '..':
+            current = current.parent
+            try:
+                current.relative_to(root)
+            except ValueError as error:
+                raise ValueError(f'{label}: outside project root: {candidate}') from error
+        elif part != '.':
+            current = current / part
+            reject_links(current)
+    try:
+        current.resolve(strict=True).relative_to(root)
+    except ValueError as error:
+        raise ValueError(f'{label}: outside project root: {candidate}') from error
+
+
 def manifests(root: Path) -> list[Path]:
     found: list[Path] = []
     def fail_walk(error: OSError) -> None:
         raise error
 
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
-        for name in dirs:
-            if (Path(directory) / name).is_symlink():
-                raise ValueError(f'symlink directory requires manual scope review: {Path(directory) / name}')
+        for name in dirs + files:
+            reject_links(Path(directory) / name)
         dirs[:] = [name for name in dirs if (Path(directory) / name).relative_to(root) not in SKIP_DIRS]
         if 'Cargo.toml' in files:
-            if (Path(directory) / 'Cargo.toml').is_symlink():
-                raise ValueError(f"symlink manifest requires manual scope review: {Path(directory) / 'Cargo.toml'}")
             found.append((Path(directory) / 'Cargo.toml').relative_to(root))
     return sorted(found)
 
@@ -105,6 +138,11 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
                     raise ValueError(f'unknown or duplicate package: {path}')
                 if not package['targets']:
                     raise ValueError(f'package has no Cargo targets: {path}')
+                for target in package['targets']:
+                    contained_path(root, target['src_path'], f'{path}: target source {target["name"]}')
+                for dependency in package['dependencies']:
+                    if dependency['path'] is not None:
+                        contained_path(root, dependency['path'], f'{path}: dependency {dependency["name"]}')
                 covered.add(path)
                 lints = table(parsed[path].get('lints'))
                 if lints.get('workspace') is True:
