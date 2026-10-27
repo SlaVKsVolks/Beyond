@@ -5,6 +5,24 @@
 board stays the task-level view (every issue and pull request); the roadmap is the overview, and each pull
 request carries the `roadmap:<id>` label of the item it moves.
 
+## Our version: macOS work is out of scope
+
+Per the user's platform decision recorded in [AGENTS.md](../AGENTS.md#our-version-platform-scope),
+macOS-only work is excluded from our version's active roadmap, not deferred to Later or marked shipped.
+The schema has no out-of-scope status, so exclusions are recorded here and in source comments rather than
+inventing a status or changing the generator.
+
+- `intel-mac` — **Horizon on Intel Macs: out of scope.** Removed from Next; game/launcher x86_64 Mac
+  builds, processor selection, and real Intel Mac validation are not planned. Historical upstream
+  references: #1171, #1161, #1792. Keep this ID reserved; do not reuse it for another feature.
+- Shared work remains planned for Windows/Linux: benchmarks, low-end performance, ray tracing, HDR,
+  signed installers, and command-line server installation. Their macOS-specific targets are out of scope.
+- `metal-occlusion` remains in Recently shipped as inherited upstream history, not future Mac work
+  or a claim of support in our version.
+
+Rebuilding must preserve these exclusions. Do not restore macOS scope from upstream roadmap updates.
+No code, CI, signing policy, or release configuration is changed by these roadmap edits.
+
 ## An item
 
 ```toml
