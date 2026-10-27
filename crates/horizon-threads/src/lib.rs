@@ -1,5 +1,7 @@
-//! Scheduling hints for the game's threads: the few OS calls that the other
-//! crates, which forbid unsafe code, can't make themselves.
+#![cfg_attr(windows, forbid(unsafe_code))]
+
+//! Scheduling hints for the game's threads. Windows uses a safe native API;
+//! the other supported platforms retain their platform-specific OS calls.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,8 +14,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// above-normal priority on Windows. Nothing elsewhere: Linux lets an
 /// unprivileged thread lower its priority but not raise it (and the JVM
 /// leaves it there too). Whether the OS took it.
+#[cfg(not(windows))]
 pub fn favour_current() -> bool {
     if std::thread::available_parallelism().map_or(1, |n| n.get()) <= 4 {
+        return false;
+    }
+    favour()
+}
+
+/// Ask for above-normal calling-thread priority when more than four processors
+/// are available. Returns false on an unavailable count or an unsuccessful OS call.
+#[cfg(windows)]
+pub fn favour_current() -> bool {
+    favour_with_parallelism(std::thread::available_parallelism())
+}
+
+#[cfg(windows)]
+fn favour_with_parallelism(parallelism: std::io::Result<std::num::NonZeroUsize>) -> bool {
+    if parallelism.map_or(1, |n| n.get()) <= 4 {
         return false;
     }
     favour()
@@ -29,11 +47,13 @@ fn favour() -> bool {
 
 #[cfg(windows)]
 fn favour() -> bool {
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-    };
-    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
-    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) != 0 }
+    set_windows_priority(thread_priority::WinAPIThreadPriority::AboveNormal)
+}
+
+#[cfg(windows)]
+fn set_windows_priority(priority: thread_priority::WinAPIThreadPriority) -> bool {
+    thread_priority::set_winapi_thread_priority(thread_priority::thread_native_id(), priority)
+        .is_ok()
 }
 
 #[cfg(not(any(target_vendor = "apple", windows)))]
@@ -114,11 +134,7 @@ fn idle() -> bool {
 
 #[cfg(windows)]
 fn idle() -> bool {
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE,
-    };
-    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
-    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) != 0 }
+    set_windows_priority(thread_priority::WinAPIThreadPriority::Idle)
 }
 
 #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
@@ -195,6 +211,118 @@ mod tests {
             assert!(super::idle_current());
             // SAFETY: reads the calling thread's own policy.
             assert_eq!(unsafe { libc::sched_getscheduler(0) }, libc::SCHED_IDLE);
+        })
+        .join()
+        .unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::{io, num::NonZeroUsize, sync::mpsc};
+    use thread_priority::{ThreadPriority, WinAPIThreadPriority, get_current_thread_priority};
+
+    fn priority() -> ThreadPriority {
+        get_current_thread_priority().unwrap()
+    }
+
+    fn expected(priority: WinAPIThreadPriority) -> ThreadPriority {
+        ThreadPriority::Os(priority.into())
+    }
+
+    #[test]
+    fn native_hints_set_exact_calling_thread_priorities() {
+        std::thread::spawn(|| {
+            assert!(favour());
+            assert_eq!(priority(), expected(WinAPIThreadPriority::AboveNormal));
+            assert!(idle_current());
+            assert_eq!(priority(), expected(WinAPIThreadPriority::Idle));
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn parallelism_gate_preserves_priority_through_four_and_on_error() {
+        std::thread::spawn(|| {
+            for count in [1, 4] {
+                let before = priority();
+                assert!(!favour_with_parallelism(Ok(
+                    NonZeroUsize::new(count).unwrap()
+                )));
+                assert_eq!(priority(), before);
+            }
+            let before = priority();
+            assert!(!favour_with_parallelism(Err(io::Error::other(
+                "unavailable"
+            ))));
+            assert_eq!(priority(), before);
+            assert!(favour_with_parallelism(Ok(NonZeroUsize::new(5).unwrap())));
+            assert_eq!(priority(), expected(WinAPIThreadPriority::AboveNormal));
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn public_favour_uses_the_available_parallelism_gate() {
+        std::thread::spawn(|| {
+            let before = priority();
+            let enough = std::thread::available_parallelism().is_ok_and(|n| n.get() > 4);
+            assert_eq!(favour_current(), enough);
+            assert_eq!(
+                priority(),
+                if enough {
+                    expected(WinAPIThreadPriority::AboveNormal)
+                } else {
+                    before
+                }
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn native_failure_returns_false_without_changing_priority() {
+        std::thread::spawn(|| {
+            let before = priority();
+            // A fresh thread is not in background mode, so ending it must fail.
+            assert!(!set_windows_priority(
+                WinAPIThreadPriority::BackgroundModeEnd
+            ));
+            assert_eq!(priority(), before);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn hints_leave_siblings_and_child_creation_priority_unchanged() {
+        std::thread::spawn(|| {
+            let before = priority();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let sibling = std::thread::spawn(move || {
+                let before = priority();
+                ready_tx.send(()).unwrap();
+                done_rx.recv().unwrap();
+                assert_eq!(priority(), before);
+            });
+            ready_rx.recv().unwrap();
+            assert!(favour());
+            let child_priority = std::thread::spawn(priority).join().unwrap();
+            // Windows creates children at normal relative priority, not their parent's hint.
+            assert_eq!(child_priority, expected(WinAPIThreadPriority::Normal));
+            assert!(idle_current());
+            assert!(!behind_server());
+            put_helpers_behind();
+            assert!(!behind_server());
+            assert_eq!(priority(), expected(WinAPIThreadPriority::Idle));
+            done_tx.send(()).unwrap();
+            sibling.join().unwrap();
+            assert_ne!(before, priority());
         })
         .join()
         .unwrap();
