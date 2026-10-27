@@ -27,6 +27,17 @@ Horizon is Minecraft: Java Edition 26.3 rewritten in Rust: a native game that re
 
 > Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft. Horizon contains no Minecraft code, assets or data: you need your own legally obtained copy of Minecraft: Java Edition 26.3.
 
+## Platform scope for our version
+
+**User decision — 2026-10-27:** macOS support is out of scope for our version of Horizon, on both
+Apple Silicon and Intel Macs. We will not target macOS-specific implementation, compatibility fixes,
+testing, packaging, signing/notarization, or releases. Other platform decisions are unchanged.
+
+The inherited upstream platform badge, download instructions, and macOS references below describe
+upstream Horizon, not a macOS support commitment for our version. Existing macOS code and workflows
+are retained; recording this scope does not remove them or change build/CI configuration. Future
+contributors and agents should follow the [local platform scope in AGENTS.md](AGENTS.md#our-version-platform-scope).
+
 ## Download
 
 Horizon is installed through **the Horizon launcher**. Get it from [playhorizon.dev](https://playhorizon.dev) (the Download button picks your system) or from [the launcher releases](https://github.com/ludovic111/horizon/releases?q=launcher-v&expanded=true), for Linux x86-64, macOS on Apple Silicon or Windows x64. The launcher installs and updates the game, prepares its files from your own copy of Minecraft, and updates itself.

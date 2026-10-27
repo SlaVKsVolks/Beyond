@@ -4,6 +4,16 @@ Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specificat
 feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
+## Our version: platform scope
+
+**User decision — 2026-10-27:** macOS support is out of scope for our version of Horizon, including
+Apple Silicon and Intel Macs. Do not plan or require macOS-specific implementation, compatibility fixes,
+testing, packaging, signing/notarization, or releases for this version. This overrides upstream macOS
+support assumptions in the inherited documentation below; it does not change upstream Horizon's policy.
+Evaluate shared changes for their relevance to in-scope platforms rather than rejecting them merely
+because they also affect macOS. Existing macOS code and workflows may remain: this scope decision alone
+does not authorize removing code or changing build/CI configuration. Other platform decisions are unchanged.
+
 ## Rules that bite
 
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).
