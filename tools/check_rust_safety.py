@@ -141,8 +141,11 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
                 for target in package['targets']:
                     contained_path(root, target['src_path'], f'{path}: target source {target["name"]}')
                 for dependency in package['dependencies']:
-                    if dependency['path'] is not None:
-                        contained_path(root, dependency['path'], f'{path}: dependency {dependency["name"]}')
+                    dependency_path = dependency.get('path')
+                    if dependency_path is not None:
+                        contained_path(root, dependency_path, f'{path}: dependency {dependency["name"]}')
+                    elif not isinstance(dependency.get('source'), str) or not dependency['source']:
+                        raise ValueError(f'{path}: dependency {dependency["name"]} has neither local path nor valid source')
                 covered.add(path)
                 lints = table(parsed[path].get('lints'))
                 if lints.get('workspace') is True:

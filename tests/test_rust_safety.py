@@ -1,5 +1,7 @@
 import builtins
 import importlib.util
+import json
+import subprocess
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -159,3 +161,26 @@ class RustSafetyTests(unittest.TestCase):
         with patch.object(Path, 'lstat', marked):
             with self.assertRaisesRegex(ValueError, 'reparse'):
                 contained_path(self.root, str(source), 'target source')
+
+    def test_registry_dependency_without_path_is_accepted(self) -> None:
+        command = ['cargo', 'metadata', '--offline', '--locked', '--no-deps', '--format-version', '1', '--manifest-path', str(self.root / 'Cargo.toml')]
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        metadata['packages'][0]['dependencies'].append({
+            'name': 'registry-fixture', 'source': 'registry+https://example.invalid/index',
+            'req': '^1', 'kind': None, 'rename': None, 'optional': False,
+            'uses_default_features': True, 'features': [], 'target': None, 'registry': None,
+        })
+        result.stdout = json.dumps(metadata)
+        with patch('tools.check_rust_safety.subprocess.run', return_value=result):
+            self.assertEqual([], audit(self.root, {Path('Cargo.toml')}))
+
+    def test_dependency_without_source_or_path_fails_closed(self) -> None:
+        command = ['cargo', 'metadata', '--offline', '--locked', '--no-deps', '--format-version', '1', '--manifest-path', str(self.root / 'Cargo.toml')]
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        metadata['packages'][0]['dependencies'].append({'name': 'malformed', 'source': None})
+        result.stdout = json.dumps(metadata)
+        with patch('tools.check_rust_safety.subprocess.run', return_value=result):
+            issues = audit(self.root, {Path('Cargo.toml')})
+        self.assertTrue(any('dependency' in issue and 'source' in issue for issue in issues), issues)
