@@ -44,7 +44,72 @@ fn hardware_probe(visible: bool) -> bool {
     true
 }
 
+// Only the explicitly selected owned lifecycle test modes enter this protocol.
+// Every dummy exits by itself within two seconds, including a RED run without job ownership.
+fn lifecycle_probe() -> bool {
+    use std::{
+        fs,
+        os::windows::process::CommandExt,
+        path::PathBuf,
+        process::Command,
+        time::{Duration, Instant},
+    };
+    let mut args = std::env::args_os().skip(1);
+    let Some(mode) = args.next() else {
+        return false;
+    };
+    if mode != "--lifecycle-parent" && mode != "--lifecycle-grandchild" {
+        return false;
+    }
+    let root = PathBuf::from(args.next().expect("owned fixture directory"));
+    let behavior = args.next().unwrap_or_default();
+    let end = Instant::now() + Duration::from_secs(2);
+    if mode == "--lifecycle-grandchild" {
+        fs::write(
+            root.join("grandchild.ready"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        while Instant::now() < end {
+            fs::write(root.join("heartbeat"), format!("{:?}", Instant::now())).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(root.join("grandchild.finished"), "self bounded").unwrap();
+        return true;
+    }
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--lifecycle-grandchild"])
+        .arg(&root)
+        .creation_flags(0x0800_0000);
+    let mut child = command.spawn().unwrap();
+    while !root.join("grandchild.ready").is_file() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(root.join("grandchild.ready").is_file());
+    fs::write(root.join("parent.ready"), std::process::id().to_string()).unwrap();
+    if behavior == "parent-exits-first" {
+        std::thread::sleep(Duration::from_millis(150));
+        // Deliberately release only the parent-side Windows process/thread handles.
+        // This fixture must exit before its self-bounded, job-owned child; waiting
+        // here would make the root-first ownership regression impossible to test.
+        drop(child);
+        return true;
+    }
+    while Instant::now() < end {
+        if behavior == "overflow" {
+            println!("{}", "x".repeat(4096));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    child.wait().unwrap();
+    true
+}
+
 fn main() {
+    if lifecycle_probe() {
+        return;
+    }
     // A console connection can exist without a terminal window, including in ConPTY.
     // These are direct OS queries; this fixture never attaches/detaches concurrently.
     let visible = win32console::console::WinConsole::get_window().is_some()
