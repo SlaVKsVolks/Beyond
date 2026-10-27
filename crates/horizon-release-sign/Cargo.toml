@@ -11,5 +11,11 @@ description = "Signed release checksums: release.yml signs SHA256SUMS, the launc
 ring = "0.17"
 base64 = "0.22"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

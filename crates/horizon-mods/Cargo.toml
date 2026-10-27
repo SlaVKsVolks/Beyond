@@ -49,5 +49,11 @@ required-features = ["runtime", "pack"]
 name = "api_reference"
 required-features = ["pack"]
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

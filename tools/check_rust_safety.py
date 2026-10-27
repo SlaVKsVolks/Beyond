@@ -96,6 +96,25 @@ def forbid(value: object) -> bool:
     return value == 'forbid' or (isinstance(value, dict) and value.get('level') == 'forbid')
 
 
+
+def lint_policy_drift(workspace: dict[str, object], package: dict[str, object]) -> list[str]:
+    """Compare a non-inheriting package against shared lints without adding allowances."""
+    problems: list[str] = []
+    for group in sorted(set(workspace) | set(package)):
+        shared = table(workspace.get(group))
+        local = table(package.get(group))
+        for name in sorted(set(shared) | set(local)):
+            if group == 'rust' and name == 'unsafe_code':
+                continue
+            if name not in local:
+                level = shared[name]
+                if level == 'allow' or (isinstance(level, dict) and level.get('level') == 'allow'):
+                    continue
+            if name not in shared or name not in local or shared[name] != local[name]:
+                problems.append(f'workspace lint policy differs: {group}.{name}')
+    return problems
+
+
 def audit(root: Path, expected: set[Path]) -> list[str]:
     if toml_parser is None:
         return ['TOML parser unavailable; install tomli via requirements-dev.txt for Python 3.10']
@@ -106,15 +125,6 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
         parsed = {path: read_manifest(root / path) for path in paths}
     except (OSError, ValueError) as error:
         return [f'manifest discovery/parsing failed: {error}']
-    direct_rustc_inputs = (
-        Path('launcher/tests/support/console_probe.rs'),
-        Path('crates/horizon-prepare/tests/support/java_probe.rs'),
-        Path('tests/test_world_input_capture.py'),
-        Path('tests/test_remote_mining.py'),
-    )
-    for path in direct_rustc_inputs:
-        if (root / path).exists():
-            issues.append(f'{path}: independently compiled by rustc or generates rustc input; Cargo lint coverage does not apply')
     roots = {path for path, data in parsed.items() if 'workspace' in data}
     for path in sorted(roots - expected):
         issues.append(f'unexpected workspace requires review: {path}')
@@ -148,8 +158,12 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
                         raise ValueError(f'{path}: dependency {dependency["name"]} has neither local path nor valid source')
                 covered.add(path)
                 lints = table(parsed[path].get('lints'))
+                workspace_lints = table(table(parsed[workspace].get('workspace')).get('lints'))
                 if lints.get('workspace') is True:
-                    lints = table(table(parsed[workspace].get('workspace')).get('lints'))
+                    lints = workspace_lints
+                elif workspace_lints:
+                    for problem in lint_policy_drift(workspace_lints, lints):
+                        issues.append(f'{path}: {problem}')
                 rust = table(lints.get('rust'))
                 if not forbid(rust.get('unsafe_code')):
                     issues.append(f'{path}: package unsafe_code forbid missing; {len(package["targets"])} targets require audit')
@@ -163,6 +177,14 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
 
 def main() -> int:
     issues = audit(ROOT, WORKSPACES)
+    try:
+        if __package__:
+            from .rust_direct_inputs import audit_direct_inputs
+        else:
+            from rust_direct_inputs import audit_direct_inputs
+        issues.extend(audit_direct_inputs(ROOT))
+    except (ImportError, OSError, ValueError) as error:
+        issues.append(f'direct compiler audit unavailable: {error}')
     if issues:
         print('Rust safety assurance FAIL:')
         for issue in issues:

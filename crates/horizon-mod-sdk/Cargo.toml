@@ -9,5 +9,11 @@ description = "Write Horizon mods in Rust: WebAssembly components for the horizo
 [dependencies]
 wit-bindgen = { version = "0.60.0", default-features = false, features = ["macros", "realloc"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

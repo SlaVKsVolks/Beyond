@@ -30,5 +30,11 @@ path = "src/bin/worldgen_parity.rs"
 name = "world_probe"
 path = "examples/probe/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

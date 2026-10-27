@@ -11,5 +11,11 @@ horizon-core = { path = "../horizon-core" }
 naga = { version = "30.0.1", features = ["glsl-in", "wgsl-in"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

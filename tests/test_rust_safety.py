@@ -1,14 +1,17 @@
 import builtins
+from contextlib import redirect_stdout
+import io
 import importlib.util
 import json
+import sys
 import subprocess
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 import unittest
 from pathlib import Path
 
-from tools.check_rust_safety import audit, contained_path
+from tools.check_rust_safety import audit, contained_path, main
 
 
 class RustSafetyTests(unittest.TestCase):
@@ -59,11 +62,15 @@ class RustSafetyTests(unittest.TestCase):
         (hidden / 'Cargo.toml').write_text('[workspace]\n', encoding='utf-8')
         self.assertTrue(any('unexpected workspace' in issue for issue in audit(self.root, {Path('Cargo.toml')})))
 
-    def test_independent_rustc_probe_is_reported(self) -> None:
-        probe = self.root / 'launcher' / 'tests' / 'support' / 'console_probe.rs'
-        probe.parent.mkdir(parents=True)
-        probe.write_text('fn main() {}\n', encoding='utf-8')
-        self.assertTrue(any('independently compiled' in issue for issue in audit(self.root, {Path('Cargo.toml')})))
+    def test_main_fails_when_direct_input_auditor_reports_blocker(self) -> None:
+        helper = ModuleType('tools.rust_direct_inputs')
+        def report(_root: Path) -> list[str]:
+            return ['console probe contains unsafe']
+        helper.audit_direct_inputs = report
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'tools.rust_direct_inputs': helper}), patch('tools.check_rust_safety.audit', return_value=[]), redirect_stdout(output):
+            self.assertEqual(1, main())
+        self.assertIn('console probe contains unsafe', output.getvalue())
 
     def test_missing_toml_parsers_fail_audit_without_aborting_import(self) -> None:
         real_import = builtins.__import__
@@ -184,3 +191,48 @@ class RustSafetyTests(unittest.TestCase):
         with patch('tools.check_rust_safety.subprocess.run', return_value=result):
             issues = audit(self.root, {Path('Cargo.toml')})
         self.assertTrue(any('dependency' in issue and 'source' in issue for issue in issues), issues)
+
+    def test_copied_workspace_clippy_policy_must_not_drift(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = "allow"\n\n[lints.rust]\nunsafe_code = "forbid"\n\n[lints.clippy]\ntoo_many_arguments = "warn"\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            issues = audit(self.root, {Path('Cargo.toml')})
+        self.assertTrue(any('workspace' in issue and 'lint' in issue for issue in issues), issues)
+
+    def test_copied_workspace_policy_tracks_new_strict_rule(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = "allow"\ntype_complexity = "deny"\n\n[lints.rust]\nunsafe_code = "forbid"\n\n[lints.clippy]\ntoo_many_arguments = "allow"\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            issues = audit(self.root, {Path('Cargo.toml')})
+        self.assertTrue(any('workspace' in issue and 'lint' in issue for issue in issues), issues)
+
+    def test_copied_workspace_clippy_policy_matches(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = "allow"\n\n[lints.rust]\nunsafe_code = "forbid"\n\n[lints.clippy]\ntoo_many_arguments = "allow"\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            self.assertEqual([], audit(self.root, {Path('Cargo.toml')}))
+
+    def test_copied_lint_priority_must_match_workspace(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = { level = "allow", priority = -1 }\n\n[lints.rust]\nunsafe_code = "forbid"\n\n[lints.clippy]\ntoo_many_arguments = { level = "allow", priority = 0 }\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            issues = audit(self.root, {Path('Cargo.toml')})
+        self.assertTrue(any('workspace' in issue and 'lint' in issue for issue in issues), issues)
+
+    def test_unapproved_additional_allow_is_rejected(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = "allow"\n\n[lints.rust]\nunsafe_code = "forbid"\n\n[lints.clippy]\ntoo_many_arguments = "allow"\ntype_complexity = "allow"\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            issues = audit(self.root, {Path('Cargo.toml')})
+        self.assertTrue(any('workspace' in issue and 'lint' in issue for issue in issues), issues)
+
+    def test_noninheriting_package_can_remain_stricter_than_workspace_allows(self) -> None:
+        self.manifest('[workspace.lints.clippy]\ntoo_many_arguments = "allow"\n\n[lints.rust]\nunsafe_code = "forbid"\n')
+        with patch('tools.check_rust_safety.contained_path'):
+            self.assertEqual([], audit(self.root, {Path('Cargo.toml')}))
+
+    def test_main_fails_if_direct_input_auditor_is_unavailable(self) -> None:
+        real_import = builtins.__import__
+        def without_direct(name: str, *args: object, **kwargs: object) -> object:
+            if name.endswith('rust_direct_inputs'):
+                raise ModuleNotFoundError(name)
+            return real_import(name, *args, **kwargs)
+        output = io.StringIO()
+        with patch('tools.check_rust_safety.audit', return_value=[]), patch('builtins.__import__', side_effect=without_direct), redirect_stdout(output):
+            self.assertEqual(1, main())
+        self.assertIn('direct compiler audit unavailable', output.getvalue())

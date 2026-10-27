@@ -37,5 +37,11 @@ path = "src/bin/density_parity.rs"
 name = "horizon-float-log-parity"
 path = "src/bin/float_log_parity.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
