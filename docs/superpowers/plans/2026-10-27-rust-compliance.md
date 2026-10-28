@@ -85,3 +85,44 @@ Integration and reindex are serialized; documentation and native source work use
 - [ ] Integrate reviewed Task 6 after clean index readback; reconcile the requirement→invariant→observable ledger with final source and review.
 - [ ] Run focused tests followed by both CI Clippy modes, root no-fail-fast tests and docs, launcher tests and unmodified `python3 tools/pr_ready.py --base 41af517`; preserve complete results. Guard's five unsafe packages and console probe remain expected FAIL until actually resolved; do not call them compliant.
 - [ ] Record Windows automated checks separately from hosted CI, other operating systems, game, production and user acceptance; mark unavailable or unrun evidence NOT RUN/BLOCKED. Prior root/launcher formatting passed with 384/21 stable-option warnings on their unchanged formatting inputs; rerun applicable prescribed gates for the final source.
+
+## Phase 7 preflight: Windows native boundaries
+
+User approval covers the design boundary and execution; no second routine approval is needed. Use separate worktrees with disjoint source ownership. Serialize Tasks 8–10 dependency/lock mutations and all integration; the coordinator reconciles the root and launcher lock closures. Preserve the existing dirty Windows candidate checkout as read-only reference; do not import unrelated changes. Before each lane edits, review published dependency provenance, license, MSRV, internals and behavior, then record its exact contract and tests. The installed pinned toolchain is 1.99.1. Use only the existing D: target, task cap 64 GiB and free floor 128 GiB; C: builds remain blocked below 32 GiB. No installs, deployment, remote writes, global configuration changes, GUI/game runs, focus changes or cleanup.
+
+| Task | Owned files and shared interfaces | Self-consistency and acceptance |
+| --- | --- | --- |
+| 8 Threads | `crates/horizon-threads/src/lib.rs`, its `Cargo.toml`, root `Cargo.lock`; launcher lock only if verified scoped closure requires it | Published `thread-priority` 3.1.1 candidate; preserve native current-thread AboveNormal/Idle, boolean/error result and >4 CPU gate; unchanged non-Windows source/tests. |
+| 9 Server | `crates/horizon-server/src/signals.rs`, `process.rs`, `main.rs`, relevant Windows console tests, `Cargo.toml`, root `Cargo.lock`; existing service test only if still needed | Published `win32console` 0.1.5 / `winconsole` 0.11.1 candidates; preserve all events/counts, ignored registration failure, callback lifetime and native console-presence condition. |
+| 10 Launcher | `launcher/Cargo.toml`, `Cargo.lock`, `src/console.rs`, necessary crate-root attributes, `build.rs`, relevant test roots/support and probe, new in-workspace fixture package if needed; guard/driver and tests only if required | `console_probe() -> &'static Path` remains automatic; safe fixture is inside existing launcher workspace and all-target forbid/guard coverage is verified. |
+| 11 Prepare/client | Bounded `horizon-prepare` manifest or roots only after native contract; client allocator analysis read-only | Windows enforcement must not break other platforms. Preserve client metrics, explicit System and failed-operation behavior; report unproven allocator candidate as blocker. |
+| 12 Integration | Coordinator integrates reviewed Tasks 8–11 sequentially and owns final shared locks/guard reconciliation | Final source plus locks drive prescribed checks and independent review. No Windows-only proof is presented as full-platform compliance. |
+
+### Task 8: Thread priority
+
+- [ ] Review `thread-priority` 3.1.1 provenance/license/MSRV and native implementation; record safe surface, internal unsafe and dependency closure.
+- [ ] Exercise compiler forbid against existing Windows unsafe before changing it, then add focused behavior tests for exact calling-thread priority, AboveNormal/Idle, result/error path, >4 gate, real `BackgroundModeEnd` failure on a fresh non-background owned thread and unaffected sibling/child inheritance. An invalid `ThreadId` handle is not safely constructible and is NOT APPLICABLE; the unrepresentable invalid-handle case is not covered. Preserve existing tests; no new unsafe fixture.
+- [ ] Implement only an equivalent safe published API, preserve Linux/Android/macOS source; run targeted Windows checks and obtain independent safety/lifecycle review. If exact readback or behavior cannot be established, report the gap instead of weakening assertions.
+
+### Task 9: Server console and controls
+
+- [ ] Review candidate packages and scoped lock changes. Trace event/counter semantics, ignored registration failure and `GetConsoleWindow` condition; `IsTerminal` is not an equivalent substitute.
+- [ ] Add focused tests for repeated requests, event handling, callback lifecycle and console-present/absent/redirected cases in owned hidden children. Do not send global parent-console events or open visible windows. Record native delivery as NOT RUN/BLOCKED if it cannot be observed safely.
+- [ ] Implement only equivalent safe calls and run focused tests/Clippy; independently review full source, lifecycle and evidence before integration.
+
+### Task 10: Launcher and probe
+
+- [ ] Review dependency implementation and exact attachment, handle snapshot/restore order, invalid/null filtering, borrowed ownership and first-error behavior. Failed attach remains benign; inherited handles are never closed.
+- [ ] Preserve actual window visibility, redirected stdin/stdout/stderr, exit 7 and hardware-probe behavior. Keep `console_probe() -> &'static Path` automatic; prefer a fixture package within the existing launcher workspace rather than a production binary that changes install/default-run/shipping behavior; enforce forbid for all targets and test actual guard/compiler coverage. Change guard/driver only narrowly if the compilation flow requires it, without weaker checks.
+- [ ] Preserve macOS titlebar source and assertions; run focused Windows tests and independent review. Real visibility/attachment acceptance remains open if unavailable.
+
+### Task 11: Prepare and allocator boundary
+
+- [ ] Determine whether Windows-scoped `horizon-prepare` forbid can cover applicable targets without breaking preserved non-Windows code; establish a native pre-edit contract before any manifest/root edit. Otherwise record the blocker.
+- [ ] Audit any independently published allocator candidate read-only against every existing requested-byte, explicit System, failed operation, peak, tracking and output invariant. Current bounded observations: `stats_alloc` counts before success and lacks peak; `tracking-allocator` changes layout/reentrancy; `alloc_tracker` relative/process peak is withheld pending equivalence proof. Do not substitute RSS or implement an unapproved metrics change; report unresolved gaps.
+
+### Task 12: Integrate and verify
+
+- [ ] Integrate each independently reviewed task in sequence; reconcile shared lock closures and any guard fixture interface. Review full diff, provenance, no added first-party unsafe, feature and platform preservation.
+- [ ] Run prescribed formatting, both CI Clippy modes, full root tests and docs, launcher tests and unmodified `python3 tools/pr_ready.py --base 41af517` once on final source; retain complete output. Run actual scoped Windows target forbid checks and state unresolved full-platform guard failures, never call them a pass.
+- [ ] Separate compiler/test results, actual Windows native event/console behavior, hosted CI, other OS, game, production and user acceptance. Mark missing evidence NOT RUN/BLOCKED. Reuse prior runs 48/50/51/52 only for unchanged inputs and acceptance layer.
