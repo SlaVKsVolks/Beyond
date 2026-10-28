@@ -101,11 +101,27 @@ struct Shared {
     routes: Mutex<HashMap<u64, (Sender<TcpStream>, Instant)>>,
     sessions: AtomicUsize,
     handshakes: AtomicUsize,
+    #[cfg(test)]
+    opening_observer: Mutex<Option<Sender<OpeningEvent>>>,
     wrong: AtomicU32,
     relay_wrong: AtomicU32,
     reach: Mutex<Option<Reach>>,
 }
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum OpeningEvent {
+    Reserved(bool),
+    Rejected(bool),
+    Released(bool),
+}
 impl Shared {
+    #[cfg(test)]
+    fn observe_opening(&self, event: OpeningEvent) {
+        let observer = self.opening_observer.lock().unwrap().clone();
+        if let Some(observer) = observer {
+            let _ = observer.send(event);
+        }
+    }
     fn emit(&self, e: HostEvent) {
         let _ = self.events.lock().unwrap().send(e);
     }
@@ -163,6 +179,8 @@ impl Host {
             routes: Mutex::new(HashMap::new()),
             sessions: AtomicUsize::new(0),
             handshakes: AtomicUsize::new(0),
+            #[cfg(test)]
+            opening_observer: Mutex::new(None),
             wrong: AtomicU32::new(0),
             relay_wrong: AtomicU32::new(0),
             reach: Mutex::new(None),
@@ -306,8 +324,12 @@ fn route_until(
             idle = false;
             if shared.handshakes.fetch_add(1, Ordering::Relaxed) >= MAX_HANDSHAKES {
                 shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                #[cfg(test)]
+                shared.observe_opening(OpeningEvent::Rejected(race.is_some()));
                 continue;
             }
+            #[cfg(test)]
+            shared.observe_opening(OpeningEvent::Reserved(race.is_some()));
             let worker = shared.clone();
             let only_session = race.as_ref().map(|(session, _, _)| *session);
             let spawned = std::thread::Builder::new()
@@ -320,11 +342,15 @@ fn route_until(
                         .and_then(|()| crate::deadline(s, HANDSHAKE))
                     else {
                         shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                        #[cfg(test)]
+                        shared.observe_opening(OpeningEvent::Released(only_session.is_some()));
                         return;
                     };
                     match direct::read_hello_from(&mut deadline) {
                         Ok(direct::Hello::Relayed(session)) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                            #[cfg(test)]
+                            shared.observe_opening(OpeningEvent::Released(only_session.is_some()));
                             if only_session.is_some_and(|only| only != session) {
                                 return;
                             }
@@ -346,11 +372,15 @@ fn route_until(
                         }
                         _ => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                            #[cfg(test)]
+                            shared.observe_opening(OpeningEvent::Released(only_session.is_some()));
                         }
                     }
                 });
             if spawned.is_err() {
                 shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                #[cfg(test)]
+                shared.observe_opening(OpeningEvent::Released(race.is_some()));
             }
         }
         if idle {
@@ -376,6 +406,8 @@ fn serve_code(shared: &Arc<Shared>, mut s: crate::Deadline, session: u64) {
         session::secure_deadline(s, &key, Role::Host)
     })();
     shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+    #[cfg(test)]
+    shared.observe_opening(OpeningEvent::Released(false));
     match secured {
         Ok(secure) => carry(shared, session, secure, true),
         Err(e) if crypto::is_wrong_code(&e) => {
@@ -576,7 +608,7 @@ fn serve_relayed(
             .lock()
             .unwrap()
             .as_ref()
-            .map(Reach::endpoints)
+            .map(|reach| shared_candidates(reach, observed))
             .unwrap_or_default();
         relay_candidates(
             direct::candidates(p, Some(relay), None),
@@ -607,8 +639,7 @@ fn serve_relayed(
                 .ok();
         }),
     );
-    drop(race);
-    shared.routes.lock().unwrap().remove(&session);
+    race.finish(shared, session);
     if let Ok(settled) = settled {
         carry(shared, session, settled.secure, settled.direct);
     }
@@ -631,6 +662,19 @@ fn reflected_candidate(
     attachment_port: Option<u16>,
 ) -> Option<SocketAddr> {
     observed.filter(|_| port.is_some() && port == attachment_port)
+}
+
+fn shared_candidates(reach: &Reach, observed: Option<SocketAddr>) -> Vec<SocketAddr> {
+    // Only the IP is evidence for the shared port. This is an inferred
+    // manual-forward/mapping candidate, NOT the fresh reflexive tuple.
+    // A local clone preserves discovery state and performs no network work.
+    let mut inferred = reach.clone();
+    if inferred.public_ip.is_none() {
+        inferred.public_ip = observed
+            .filter(|address| !address.ip().is_unspecified())
+            .map(|address| address.ip());
+    }
+    inferred.endpoints()
 }
 
 /// Reserve the observed path, best shared (mapped/forwarded) path and fresh
@@ -662,6 +706,12 @@ fn relay_candidates(
 struct InboundRace {
     stop: Option<Arc<AtomicBool>>,
     worker: Option<JoinHandle<()>>,
+}
+impl InboundRace {
+    fn finish(self, shared: &Shared, session: u64) {
+        drop(self);
+        shared.routes.lock().unwrap().remove(&session);
+    }
 }
 impl Drop for InboundRace {
     fn drop(&mut self) {
@@ -708,6 +758,7 @@ mod opening_tests {
             routes: Mutex::new(HashMap::new()),
             sessions: AtomicUsize::new(0),
             handshakes: AtomicUsize::new(0),
+            opening_observer: Mutex::new(None),
             wrong: AtomicU32::new(0),
             relay_wrong: AtomicU32::new(0),
             reach: Mutex::new(None),
@@ -889,6 +940,73 @@ mod opening_tests {
     }
 
     #[test]
+    fn relay_ip_preserves_shared_public_paths_without_discovery() {
+        let observed = "203.0.113.8:40000".parse().unwrap();
+        let reach = Reach {
+            port: 25580,
+            local: vec!["192.168.1.2".parse().unwrap()],
+            ..Reach::default()
+        };
+        let fresh = "192.168.1.2:40000".parse().unwrap();
+        let candidates = relay_candidates(
+            vec![fresh],
+            shared_candidates(&reach, Some(observed)),
+            reflected_candidate(Some(observed), Some(40000), Some(40000)),
+        );
+        assert!(candidates.contains(&"203.0.113.8:25580".parse().unwrap()));
+        assert_eq!(candidates[0], observed);
+        assert!(candidates.contains(&fresh));
+    }
+
+    #[test]
+    fn relay_ip_inference_respects_existing_mapping_discovery_and_port_mismatch() {
+        use crate::portmap::{Mapping, Method};
+        let observed = "203.0.113.8:40001".parse().unwrap();
+        let mut reach = Reach {
+            port: 25580,
+            local: vec!["192.168.1.2".parse().unwrap()],
+            mapping: Some(Mapping::granted(
+                Method::NatPmp,
+                "0.0.0.0:40123".parse().unwrap(),
+            )),
+            ..Reach::default()
+        };
+        let fresh = "192.168.1.2:40000".parse().unwrap();
+        let assembled = relay_candidates(
+            vec![fresh],
+            shared_candidates(&reach, Some(observed)),
+            reflected_candidate(Some(observed), Some(40000), Some(40001)),
+        );
+        assert_eq!(assembled[0], "203.0.113.8:40123".parse().unwrap());
+        assert!(assembled.contains(&"203.0.113.8:25580".parse().unwrap()));
+        assert!(assembled.contains(&fresh));
+        assert!(!assembled.contains(&observed));
+        assert_eq!(reach.public_ip, None);
+        assert_eq!(
+            reach.mapping.as_ref().unwrap().external,
+            "0.0.0.0:40123".parse().unwrap()
+        );
+        reach.public_ip = Some("198.51.100.9".parse().unwrap());
+        let known = shared_candidates(&reach, Some(observed));
+        assert_eq!(known[0], "198.51.100.9:40123".parse().unwrap());
+        assert!(known.contains(&"198.51.100.9:25580".parse().unwrap()));
+        assert!(!known.contains(&"203.0.113.8:25580".parse().unwrap()));
+        reach.local = (1..=12)
+            .map(|n| format!("10.0.0.{n}").parse().unwrap())
+            .collect();
+        let capped = relay_candidates(
+            vec![fresh],
+            shared_candidates(&reach, Some(observed)),
+            Some(observed),
+        );
+        assert_eq!(capped.len(), crate::invite::MAX_ENDPOINTS);
+        assert_eq!(
+            &capped[..3],
+            &[observed, "198.51.100.9:40123".parse().unwrap(), fresh]
+        );
+    }
+
+    #[test]
     fn missing_rendezvous_listener_keeps_relay_only_capability() {
         let (listeners, port) = rendezvous(Err(io::ErrorKind::AddrNotAvailable.into()));
         assert!(listeners.is_empty());
@@ -973,5 +1091,225 @@ mod opening_tests {
         // Drop joins the finite accept loop, including an error-path stop.
         drop(race);
         assert!(TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err());
+    }
+
+    fn owned_test_race(
+        shared: &Arc<Shared>,
+        session: u64,
+    ) -> (InboundRace, SocketAddr, Receiver<TcpStream>) {
+        let (listeners, port) = direct::listen(0).unwrap();
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let worker = shared.clone();
+        let (tx, rx) = channel();
+        let until = Instant::now() + direct::RACE;
+        shared.routes.lock().unwrap().insert(session, (tx, until));
+        let race = InboundRace {
+            stop: Some(stop),
+            worker: Some(std::thread::spawn(move || {
+                route_until(listeners, worker, Some((session, until, flag)));
+            })),
+        };
+        (race, address, rx)
+    }
+
+    fn opening_event(rx: &Receiver<OpeningEvent>) -> OpeningEvent {
+        rx.recv_timeout(Duration::from_secs(2)).unwrap()
+    }
+
+    fn opening_peer(address: SocketAddr) -> TcpStream {
+        let peer = TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        peer
+    }
+
+    #[test]
+    fn overlapping_session_owners_isolate_shared_and_fresh_handoffs() {
+        std::thread::scope(|scope| {
+            let shared = shared("127.0.0.1:9".parse().unwrap());
+            let router = Router::start(shared.clone());
+            let (events, observed) = channel();
+            *shared.opening_observer.lock().unwrap() = Some(events);
+            let (a, aa, arx) = owned_test_race(&shared, 91);
+            let (b, ba, brx) = owned_test_race(&shared, 92);
+            let mut workers = Vec::new();
+            let mut releases = Vec::new();
+            for (address, session, data) in [
+                (aa, 91u64, *b"a-fresh!"),
+                (router.address, 91, *b"a-shared"),
+                (ba, 92, *b"b-fresh!"),
+                (router.address, 92, *b"b-shared"),
+            ] {
+                let mut peer = opening_peer(address);
+                let mut hello = *b"HZF1\0\0\0\0\0\0\0\0";
+                hello[4..].copy_from_slice(&session.to_be_bytes());
+                peer.write_all(&hello[..11]).unwrap();
+                let (go, ready) = channel();
+                releases.push(go);
+                workers.push(scope.spawn(move || {
+                    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+                    peer.write_all(&hello[11..]).unwrap();
+                    let mut echo = [0; 12];
+                    peer.read_exact(&mut echo).unwrap();
+                    assert_eq!(echo, hello);
+                    peer.write_all(&data).unwrap();
+                    let mut reply = [0; 8];
+                    peer.read_exact(&mut reply).unwrap();
+                    assert_eq!(reply, data);
+                }));
+            }
+            // All four actual openings remain held BEFORE any hello completes.
+            let mut fresh = 0;
+            for _ in 0..4 {
+                match opening_event(&observed) {
+                    OpeningEvent::Reserved(is_fresh) => fresh += usize::from(is_fresh),
+                    event => panic!("unexpected opening transition: {event:?}"),
+                }
+            }
+            assert_eq!(fresh, 2);
+            assert_eq!(shared.handshakes.load(Ordering::Relaxed), 4);
+            assert_eq!(shared.routes.lock().unwrap().len(), 2);
+            assert!(!a.worker.as_ref().unwrap().is_finished());
+            assert!(!b.worker.as_ref().unwrap().is_finished());
+            for go in releases {
+                go.send(()).unwrap();
+            }
+            for (rx, expected) in [
+                (&arx, [*b"a-fresh!", *b"a-shared"]),
+                (&brx, [*b"b-fresh!", *b"b-shared"]),
+            ] {
+                let mut seen = Vec::new();
+                for _ in 0..2 {
+                    let mut stream = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut data = [0; 8];
+                    stream.read_exact(&mut data).unwrap();
+                    assert!(expected.contains(&data));
+                    assert!(!seen.contains(&data));
+                    seen.push(data);
+                    stream.write_all(&data).unwrap();
+                }
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            for _ in 0..4 {
+                assert!(matches!(
+                    opening_event(&observed),
+                    OpeningEvent::Released(_)
+                ));
+            }
+            assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+            // Early failures on BOTH fresh owners release actual slots too.
+            for address in [aa, ba] {
+                let mut peer = opening_peer(address);
+                peer.write_all(b"H").unwrap();
+                assert_eq!(opening_event(&observed), OpeningEvent::Reserved(true));
+                peer.shutdown(Shutdown::Both).unwrap();
+                drop(peer);
+                assert_eq!(opening_event(&observed), OpeningEvent::Released(true));
+            }
+            assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+            a.finish(&shared, 91);
+            b.finish(&shared, 92);
+            assert!(shared.routes.lock().unwrap().is_empty());
+            for address in [aa, ba] {
+                assert!(TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err());
+            }
+        });
+    }
+
+    #[test]
+    fn competing_shared_and_fresh_openings_reserve_only_the_last_slot() {
+        use std::sync::Barrier;
+        std::thread::scope(|scope| {
+            let shared = shared("127.0.0.1:9".parse().unwrap());
+            let router = Router::start(shared.clone());
+            let (events, observed) = channel();
+            *shared.opening_observer.lock().unwrap() = Some(events);
+            let (race, address, rx) = owned_test_race(&shared, 93);
+            let mut held = Vec::new();
+            // Real Code openings wait for key exchange while retaining slots.
+            for session in 0..MAX_HANDSHAKES - 1 {
+                let mut peer = opening_peer(router.address);
+                direct::code_hello(&mut peer, session as u64).unwrap();
+                assert_eq!(opening_event(&observed), OpeningEvent::Reserved(false));
+                held.push(peer);
+            }
+            assert_eq!(
+                shared.handshakes.load(Ordering::Relaxed),
+                MAX_HANDSHAKES - 1
+            );
+            let start = Arc::new(Barrier::new(3));
+            let global_start = start.clone();
+            let global_address = router.address;
+            let (result, outcome) = channel();
+            let (release, until_release) = channel();
+            let global = scope.spawn(move || {
+                global_start.wait();
+                let mut peer = opening_peer(global_address);
+                let accepted = direct::code_hello(&mut peer, 94).is_ok();
+                result.send(accepted).unwrap();
+                until_release.recv_timeout(Duration::from_secs(2)).unwrap();
+                let _ = peer.shutdown(Shutdown::Both);
+            });
+            let fresh_start = start.clone();
+            let (complete, until_complete) = channel();
+            let fresh = scope.spawn(move || {
+                fresh_start.wait();
+                let mut peer = opening_peer(address);
+                let mut hello = *b"HZF1\0\0\0\0\0\0\0\0";
+                hello[4..].copy_from_slice(&93u64.to_be_bytes());
+                let wrote = peer.write_all(&hello[..11]).is_ok();
+                until_complete.recv_timeout(Duration::from_secs(2)).unwrap();
+                if !wrote || peer.write_all(&hello[11..]).is_err() {
+                    return false;
+                }
+                let mut echo = [0; 12];
+                peer.read_exact(&mut echo).is_ok() && echo == hello
+            });
+            start.wait();
+            let first = opening_event(&observed);
+            let second = opening_event(&observed);
+            let fresh_won = match (first, second) {
+                (OpeningEvent::Reserved(a), OpeningEvent::Rejected(b))
+                | (OpeningEvent::Rejected(b), OpeningEvent::Reserved(a)) => {
+                    assert_ne!(a, b);
+                    a
+                }
+                events => panic!("more than one winner or missing rejection: {events:?}"),
+            };
+            assert_eq!(shared.handshakes.load(Ordering::Relaxed), MAX_HANDSHAKES);
+            let global_won = outcome.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_ne!(fresh_won, global_won);
+            complete.send(()).unwrap();
+            assert_eq!(fresh.join().unwrap(), fresh_won);
+            if fresh_won {
+                drop(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+            }
+            release.send(()).unwrap();
+            global.join().unwrap();
+            for peer in held {
+                peer.shutdown(Shutdown::Both).unwrap();
+            }
+            for _ in 0..MAX_HANDSHAKES {
+                assert!(matches!(
+                    opening_event(&observed),
+                    OpeningEvent::Released(_)
+                ));
+            }
+            assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+            race.finish(&shared, 93);
+            assert!(shared.routes.lock().unwrap().is_empty());
+            assert!(TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err());
+        });
     }
 }
