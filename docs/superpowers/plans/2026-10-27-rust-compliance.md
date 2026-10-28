@@ -17,6 +17,8 @@
 - No installs, game runs, deployment, remote writes, branch protection changes or unsafe exceptions.
 - Do not create negative unsafe-code fixtures. Independent review is mandatory for safety, public-contract and concurrency changes.
 
+**Phase 7 supersession:** The later explicit user approval permits independently maintained published safe OS APIs with audited and documented internal unsafe. It supersedes the earlier unchanged-dependency restriction for the scoped, reviewed Windows replacements only; custom relocation of first-party unsafe remains prohibited.
+
 ## Review Focus
 
 1. Unlisted Cargo target or separate workspace: inventory and validate actual scope in Task 1.
@@ -94,7 +96,7 @@ User approval covers the design boundary and execution; no second routine approv
 | --- | --- | --- |
 | 8 Threads | `crates/horizon-threads/src/lib.rs`, its `Cargo.toml`, root `Cargo.lock`; launcher lock only if verified scoped closure requires it | Published `thread-priority` 3.1.1 candidate; preserve native current-thread AboveNormal/Idle, boolean/error result and >4 CPU gate; unchanged non-Windows source/tests. |
 | 9 Server | `crates/horizon-server/src/signals.rs`, `process.rs`, `main.rs`, relevant Windows console tests, `Cargo.toml`, root `Cargo.lock`; existing service test only if still needed | Published `win32console` 0.1.5 / `winconsole` 0.11.1 candidates; preserve all events/counts, ignored registration failure, callback lifetime and native console-presence condition. |
-| 10 Launcher | `launcher/Cargo.toml`, `Cargo.lock`, `src/console.rs`, necessary crate-root attributes, `build.rs`, relevant test roots/support and probe, new in-workspace fixture package if needed; guard/driver and tests only if required | `console_probe() -> &'static Path` remains automatic; safe fixture is inside existing launcher workspace and all-target forbid/guard coverage is verified. |
+| 10A / 10B Launcher | 10A owns production console, launcher manifest/lock and existing Cargo roots; 10B owns fixture, probe helper and narrowly necessary guard wiring | 10A Windows Cargo-root proof excludes the standalone probe; 10B must prove actual fixture/guard coverage and preserve `console_probe() -> &'static Path`. |
 | 11 Prepare/client | Bounded `horizon-prepare` manifest or roots only after native contract; client allocator analysis read-only | Windows enforcement must not break other platforms. Preserve client metrics, explicit System and failed-operation behavior; report unproven allocator candidate as blocker. |
 | 12 Integration | Coordinator integrates reviewed Tasks 8–11 sequentially and owns final shared locks/guard reconciliation | Final source plus locks drive prescribed checks and independent review. No Windows-only proof is presented as full-platform compliance. |
 
@@ -110,12 +112,23 @@ User approval covers the design boundary and execution; no second routine approv
 - [ ] Add focused tests for repeated requests, event handling, callback lifecycle and console-present/absent/redirected cases in owned hidden children. Do not send global parent-console events or open visible windows. Record native delivery as NOT RUN/BLOCKED if it cannot be observed safely.
 - [ ] Implement only equivalent safe calls and run focused tests/Clippy; independently review full source, lifecycle and evidence before integration.
 
-### Task 10: Launcher and probe
+### Task 10A: Launcher production attachment and Windows forbid
 
-- [ ] Review dependency implementation and exact attachment, handle snapshot/restore order, invalid/null filtering, borrowed ownership and first-error behavior. Failed attach remains benign; inherited handles are never closed.
-- [ ] Preserve actual window visibility, redirected stdin/stdout/stderr, exit 7 and hardware-probe behavior. Keep `console_probe() -> &'static Path` automatic; prefer a fixture package within the existing launcher workspace rather than a production binary that changes install/default-run/shipping behavior; enforce forbid for all targets and test actual guard/compiler coverage. Change guard/driver only narrowly if the compilation flow requires it, without weaker checks.
-- [ ] Preserve macOS titlebar source and assertions; run focused Windows tests and independent review. Real visibility/attachment acceptance remains open if unavailable.
+**Files:** `launcher/Cargo.toml`, `launcher/Cargo.lock`, `launcher/src/console.rs`, Windows-scoped forbid attributes on Cargo crate roots (`src/lib.rs`, `src/main.rs`, `build.rs` and existing integration-test roots). Production dependency candidate is only `win32console` 0.1.5 unless additional necessity is independently established; preserve scoped closure and no unrelated upgrades.
 
+- [ ] Review dependency provenance/license/MSRV/internal unsafe; exercise Windows forbid against existing unsafe and characterize actual old behavior before source changes where practical.
+- [ ] Preserve `attach_for_cli` result, no-argument/non-Windows no-op and macOS source; snapshot all standard handles before attach, treat attach failure as benign, filter null/invalid handles, restore borrowed handles in order, return the first OS error and never close inherited handles.
+- [ ] Test the real function's normal and failure ordering, run existing 125 launcher tests and check actual Windows all-target Cargo roots under forbid. The existing standalone probe is outside that proof and remains blocked until Task 10B.
+- [ ] Obtain independent safety/public/lifecycle review and record actual evidence before integration.
+
+### Task 10B: Probe fixture, bounded helper and guard wiring
+
+**Ruling: HOLD / BLOCKED, no implementation.** Independent review found no already-proven safe drop-in preserving the standalone direct-rustc flow and real window-visibility assertion. The proposed member/nested-build helper still lacks established bounded capture, process-tree retirement and executable/guard wiring proof. This is a candidate-design proof gap, not universal impossibility of safe Rust. Preserve the probe, assertions and fail-closed guard; do not introduce a general helper solely to force this milestone. Review: `phase7-task10b-blocker-review.md` in the verify lane's existing plan workspace. Finish the independent authorized Tasks 10A and 11, then run final checks and report the unresolved boundary.
+
+- [ ] Prefer a fixture package inside the existing launcher workspace (`default-members = ["."]`, explicit package, `publish = false`, global forbid); preserve automatic `console_probe() -> &'static Path`, native visibility and every existing stdin/stdout/stderr, exit 7 and hardware assertion. Do not silently substitute terminal detection or a shipping production binary.
+- [ ] If validated, use a small fixed-purpose CargoJob helper with `win-custody` 0.1.1 / `win32job` 2.0.3: create suspended, assign to the job before resume, verify empty job state and bounded teardown; capture owned output files. Keep the existing guard intact until strict actual target and wiring tests prove any mapping change.
+- [ ] The 32 MiB log value is a measured STOP threshold, checked during polling and after exit, not an absolute quota: a fast writer may overshoot. Retain exact outputs and ownership receipt until qualified cleanup. Pipe-based capture is rejected because inherited handles can prevent bounded EOF/join. No large cleanup framework or broad copies.
+- [ ] Verify actual standalone-to-workspace compilation flow, all-target forbid and guard coverage; preserve missing coverage as BLOCKED rather than disguising it. Exact files and final helper contract are to be recorded before 10B edits.
 ### Task 11: Prepare and allocator boundary
 
 - [ ] Determine whether Windows-scoped `horizon-prepare` forbid can cover applicable targets without breaking preserved non-Windows code; establish a native pre-edit contract before any manifest/root edit. Otherwise record the blocker.
