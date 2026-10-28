@@ -2,6 +2,8 @@
 //! guests, and (for the relay cases) a self-hosted relay, all on loopback
 //! in one process. Port mapping and STUN are off here: they have their own
 //! tests against mock routers and servers in horizon-friends.
+#![forbid(unsafe_code)]
+
 use horizon_friends::{
     Code, Host, HostConfig, HostEvent, JoinError, PathMode,
     guest::{self, GuestConfig},
@@ -11,7 +13,7 @@ use horizon_friends::{
 use horizon_relay::{Config, Relay, limits::Rates};
 use std::{
     cell::RefCell,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     time::{Duration, Instant},
 };
@@ -433,6 +435,52 @@ fn health_and_whoami_answer_http() {
     assert!(get("/").starts_with("HTTP/1.1 404"));
 }
 
+/// HTTP headers share the absolute first-line deadline.
+#[test]
+fn slow_http_headers_are_closed_within_the_first_line_deadline() {
+    let (_relay, address) = relay(Config {
+        first_line: Duration::from_secs(1),
+        ..Config::default()
+    });
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream.write_all(b"GET /health HTTP/1.1\r\n").unwrap();
+    let started = Instant::now();
+    let mut write_closed = false;
+    while started.elapsed() < Duration::from_secs(3) {
+        if let Err(error) = stream.write_all(b"x") {
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            ));
+            write_closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        write_closed,
+        "relay did not close the incomplete HTTP request"
+    );
+    let mut response = [0u8; 1];
+    match stream.read(&mut response) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+            ) => {}
+        result => panic!("expected closed connection, got {result:?}"),
+    }
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
 /// A first line trickled a byte at a time still has to arrive within
 /// `first_line` in all; past `max_connections`, connections close unanswered.
 #[test]
@@ -458,4 +506,94 @@ fn slow_first_lines_and_too_many_connections_are_closed() {
         "the slow first line held on for {closed:?}"
     );
     drop(held);
+}
+
+#[test]
+fn proxy_request_and_http_headers_share_one_opening_budget() {
+    let (_relay, address) = relay(Config {
+        proxy_protocol: true,
+        first_line: Duration::from_millis(500),
+        ..Config::default()
+    });
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let started = Instant::now();
+    stream
+        .write_all(b"PROXY TCP4 192.0.2.7 192.0.2.8 1234 7000\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nX: a\r\n")
+        .unwrap();
+    // Complete lines do not restart the remaining 200ms budget.
+    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    assert!(started.elapsed() < Duration::from_millis(750));
+}
+
+#[test]
+fn proxy_and_incomplete_first_line_share_one_opening_budget() {
+    let (_relay, address) = relay(Config {
+        proxy_protocol: true,
+        first_line: Duration::from_millis(500),
+        ..Config::default()
+    });
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let started = Instant::now();
+    stream
+        .write_all(b"PROXY TCP4 192.0.2.7 192.0.2.8 1234 7000\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    stream.write_all(b"{").unwrap();
+    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    assert!(started.elapsed() < Duration::from_millis(750));
+}
+
+#[test]
+fn http_header_count_and_line_length_limits_are_unchanged() {
+    let (_relay, address) = relay(Config::default());
+    let connect = || {
+        let stream = TcpStream::connect(&address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        stream
+    };
+    let mut stream = connect();
+    stream.write_all(b"GET /health HTTP/1.1\r\n").unwrap();
+    for _ in 0..65 {
+        stream.write_all(b"X: a\r\n").unwrap();
+    }
+    // Existing policy answers after header65, without needing a blank line.
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let mut stream = connect();
+    stream.write_all(b"GET /health HTTP/1.1\r\n").unwrap();
+    let mut line = vec![b'x'; horizon_friends::wire::MAX_LINE + 1];
+    line.push(b'\n');
+    stream.write_all(&line).unwrap();
+    // Unread over-limit bytes permit a reset instead of graceful peer EOF.
+    match stream.read(&mut [0]) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+            ) => {}
+        result => panic!("over-limit line remained live: {result:?}"),
+    }
 }

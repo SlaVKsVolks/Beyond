@@ -288,7 +288,7 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
     while !shared.stopped() {
         let mut idle = true;
         for l in &listeners {
-            let Ok((mut s, _)) = l.accept() else { continue };
+            let Ok((s, _)) = l.accept() else { continue };
             idle = false;
             if shared.handshakes.load(Ordering::Relaxed) >= MAX_HANDSHAKES {
                 continue;
@@ -299,11 +299,14 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                 .name("horizon-friends-inbound".into())
                 .spawn(move || {
                     let _ = s.set_nonblocking(false);
-                    let Ok(deadline) = crate::deadline(&s, HANDSHAKE) else {
+                    let Ok(mut deadline) = s
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .and_then(|()| crate::deadline(s, HANDSHAKE))
+                    else {
                         shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         return;
                     };
-                    match direct::read_hello(&mut s) {
+                    match direct::read_hello_from(&mut deadline) {
                         Ok(direct::Hello::Relayed(session)) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                             let route = {
@@ -311,15 +314,15 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                                 routes.retain(|_, (_, until)| *until > Instant::now());
                                 routes.get(&session).map(|(tx, _)| tx.clone())
                             };
-                            if let Some(tx) = route
-                                && direct::answer(&mut s, session).is_ok()
-                            {
+                            let Some(tx) = route else { return };
+                            if direct::answer(&mut deadline, session).is_err() {
+                                return;
+                            }
+                            if let Ok(s) = deadline.cancel() {
                                 let _ = tx.send(s);
                             }
                         }
-                        Ok(direct::Hello::Code(session)) => {
-                            serve_code(&shared, s, session, deadline)
-                        }
+                        Ok(direct::Hello::Code(session)) => serve_code(&shared, deadline, session),
                         Err(_) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         }
@@ -335,7 +338,7 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
 /// A guest who dialled an endpoint from the code: agree on the key from
 /// the code's secret, then carry the session (`deadline` bounds the
 /// handshake, not the game).
-fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: crate::Deadline) {
+fn serve_code(shared: &Arc<Shared>, mut s: crate::Deadline, session: u64) {
     let secret = shared
         .invite
         .lock()
@@ -346,9 +349,8 @@ fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: cr
         let secret = secret.ok_or_else(|| io::Error::other("not ready"))?;
         direct::answer_code(&mut s, session)?;
         let key = crypto::exchange(&mut s, &secret, "direct", session)?;
-        session::secure(s, &key, Role::Host)
+        session::secure_deadline(s, &key, Role::Host)
     })();
-    drop(deadline);
     shared.handshakes.fetch_sub(1, Ordering::Relaxed);
     match secured {
         Ok(secure) => carry(shared, session, secure, true),
@@ -567,5 +569,192 @@ fn serve_relayed(
     shared.routes.lock().unwrap().remove(&session);
     if let Ok(settled) = settled {
         carry(shared, session, settled.secure, settled.direct);
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn shared(lan: SocketAddr) -> Arc<Shared> {
+        let (tx, _events) = channel();
+        Arc::new(Shared {
+            config: HostConfig {
+                lan,
+                protocol: 777,
+                game: "test".into(),
+                relay: None,
+                path: PathMode::DirectOnly,
+                port: 0,
+                reach: reach::Options {
+                    map_port: false,
+                    stun: vec![],
+                    loopback: true,
+                },
+            },
+            stop: AtomicBool::new(false),
+            state: Mutex::new(HostState::default()),
+            events: Mutex::new(tx),
+            invite: Mutex::new(Some(Invite {
+                secret: [7; 10],
+                port: 0,
+                endpoints: vec![],
+                relay: None,
+            })),
+            control: Mutex::new(None),
+            routes: Mutex::new(HashMap::new()),
+            sessions: AtomicUsize::new(0),
+            handshakes: AtomicUsize::new(0),
+            wrong: AtomicU32::new(0),
+            relay_wrong: AtomicU32::new(0),
+            reach: Mutex::new(None),
+        })
+    }
+
+    struct Router {
+        shared: Arc<Shared>,
+        thread: Option<JoinHandle<()>>,
+        address: SocketAddr,
+    }
+    impl Router {
+        fn start(shared: Arc<Shared>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let worker = shared.clone();
+            let thread = Some(std::thread::spawn(move || {
+                route_inbound(vec![listener], worker)
+            }));
+            Self {
+                shared,
+                thread,
+                address,
+            }
+        }
+    }
+    impl Drop for Router {
+        fn drop(&mut self) {
+            self.shared.stop.store(true, Ordering::Relaxed);
+            self.thread.take().unwrap().join().unwrap();
+        }
+    }
+
+    #[test]
+    fn relayed_handoff_restores_hello_baseline_and_keeps_payload() {
+        let shared = shared("127.0.0.1:9".parse().unwrap());
+        let (tx, rx) = channel();
+        shared
+            .routes
+            .lock()
+            .unwrap()
+            .insert(17, (tx, Instant::now() + Duration::from_secs(20)));
+        let router = Router::start(shared.clone());
+        let mut peer = TcpStream::connect(router.address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let started = Instant::now();
+        direct::answer(&mut peer, 17).unwrap();
+        let mut echo = [0; 12];
+        peer.read_exact(&mut echo).unwrap();
+        let mut routed = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(routed.read_timeout().unwrap(), Some(Duration::from_secs(5)));
+        assert_eq!(routed.write_timeout().unwrap(), None);
+        assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+        std::thread::sleep(
+            (HANDSHAKE + Duration::from_millis(100)).saturating_sub(started.elapsed()),
+        );
+        peer.write_all(b"payload").unwrap();
+        let mut data = [0; 7];
+        routed.read_exact(&mut data).unwrap();
+        assert_eq!(&data, b"payload");
+        routed.write_all(b"reply").unwrap();
+        let mut reply = [0; 5];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"reply");
+    }
+
+    fn wait_for(mut predicate: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(3);
+        while !predicate() {
+            assert!(Instant::now() < until, "opening cleanup did not complete");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn code_handoff_keeps_confirmed_bidirectional_payload_after_deadline() {
+        let lan = TcpListener::bind("127.0.0.1:0").unwrap();
+        lan.set_nonblocking(true).unwrap();
+        let shared = shared(lan.local_addr().unwrap());
+        let secret = shared
+            .invite
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .secret_text();
+        let router = Router::start(shared.clone());
+        let mut peer = TcpStream::connect(router.address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let started = Instant::now();
+        direct::code_hello(&mut peer, 23).unwrap();
+        let key = crypto::exchange(&mut peer, &secret, "direct", 23).unwrap();
+        let (mut reader, mut writer) = session::secure(peer, &key, Role::Guest).unwrap();
+        let mut server = None;
+        wait_for(|| {
+            server = lan.accept().ok().map(|(socket, _)| socket);
+            server.is_some()
+        });
+        let mut server = server.unwrap();
+        server.set_nonblocking(false).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+        std::thread::sleep(
+            (HANDSHAKE + Duration::from_millis(100)).saturating_sub(started.elapsed()),
+        );
+        writer.write_data(b"guest payload").unwrap();
+        let mut data = [0; 13];
+        server.read_exact(&mut data).unwrap();
+        assert_eq!(&data, b"guest payload");
+        server.write_all(b"host payload").unwrap();
+        assert!(
+            matches!(reader.read_frame().unwrap(), Some(crypto::Frame::Data(data)) if data == b"host payload")
+        );
+        let _ = reader.get_ref().shutdown(Shutdown::Both);
+        let _ = server.shutdown(Shutdown::Both);
+        wait_for(|| shared.sessions.load(Ordering::Relaxed) == 0);
+    }
+
+    #[test]
+    fn wrong_code_and_invalid_hello_release_opening_slots() {
+        let shared = shared("127.0.0.1:9".parse().unwrap());
+        let router = Router::start(shared.clone());
+        let mut peer = TcpStream::connect(router.address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        direct::code_hello(&mut peer, 29).unwrap();
+        let key = crypto::exchange(&mut peer, "wrong secret", "direct", 29).unwrap();
+        assert!(session::secure(peer, &key, Role::Guest).is_err());
+        wait_for(|| shared.wrong.load(Ordering::Relaxed) == 1);
+        assert_eq!(shared.handshakes.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.sessions.load(Ordering::Relaxed), 0);
+        let mut peer = TcpStream::connect(router.address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        peer.write_all(b"bad hello!!!").unwrap();
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        wait_for(|| shared.handshakes.load(Ordering::Relaxed) == 0);
+        assert_eq!(shared.wrong.load(Ordering::Relaxed), 1);
     }
 }

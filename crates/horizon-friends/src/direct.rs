@@ -152,6 +152,9 @@ pub enum Hello {
 }
 pub fn read_hello(stream: &mut TcpStream) -> io::Result<Hello> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    read_hello_from(stream)
+}
+pub(crate) fn read_hello_from(stream: &mut impl Read) -> io::Result<Hello> {
     let mut theirs = [0u8; 12];
     stream.read_exact(&mut theirs)?;
     let session = u64::from_be_bytes(theirs[4..].try_into().unwrap());
@@ -183,14 +186,14 @@ pub fn code_hello(stream: &mut TcpStream, session: u64) -> io::Result<()> {
     Ok(())
 }
 /// The host echoes a code session's hello.
-pub fn answer_code(stream: &mut TcpStream, session: u64) -> io::Result<()> {
+pub fn answer_code(stream: &mut impl Write, session: u64) -> io::Result<()> {
     let mut hello = [0u8; 12];
     hello[..4].copy_from_slice(CODE_MAGIC);
     hello[4..].copy_from_slice(&session.to_be_bytes());
     stream.write_all(&hello)
 }
 /// Answer an inbound stream's introduction for `session`.
-pub fn answer(stream: &mut TcpStream, session: u64) -> io::Result<()> {
+pub fn answer(stream: &mut impl Write, session: u64) -> io::Result<()> {
     let mut hello = [0u8; 12];
     hello[..4].copy_from_slice(MAGIC);
     hello[4..].copy_from_slice(&session.to_be_bytes());

@@ -11,7 +11,10 @@ use chacha20poly1305::{
 use hkdf::Hkdf;
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
-use std::io::{self, Read, Write};
+use std::{
+    io::{self, Read, Write},
+    net::TcpStream,
+};
 
 /// The most game bytes in one frame.
 pub const MAX_PAYLOAD: usize = 16 * 1024;
@@ -97,6 +100,20 @@ pub struct SecureWriter<W> {
     cipher: ChaCha20Poly1305,
     counter: u64,
 }
+impl<W> SecureWriter<W> {
+    pub(crate) fn into_parts(self) -> (W, impl FnOnce(TcpStream) -> SecureWriter<TcpStream>) {
+        let Self {
+            inner,
+            cipher,
+            counter,
+        } = self;
+        (inner, move |inner| SecureWriter {
+            inner,
+            cipher,
+            counter,
+        })
+    }
+}
 impl<W: Write> SecureWriter<W> {
     fn frame(&mut self, kind: u8, payload: &[u8]) -> io::Result<()> {
         debug_assert!(payload.len() <= MAX_PAYLOAD);
@@ -151,6 +168,20 @@ pub struct SecureReader<R> {
     inner: R,
     cipher: ChaCha20Poly1305,
     counter: u64,
+}
+impl<R> SecureReader<R> {
+    pub(crate) fn into_parts(self) -> (R, impl FnOnce(TcpStream) -> SecureReader<TcpStream>) {
+        let Self {
+            inner,
+            cipher,
+            counter,
+        } = self;
+        (inner, move |inner| SecureReader {
+            inner,
+            cipher,
+            counter,
+        })
+    }
 }
 impl<R: Read> SecureReader<R> {
     /// The next frame's kind and payload; None at a clean end of stream.
@@ -388,5 +419,49 @@ mod tests {
         assert!(r.read_frame().is_err());
         // A header claiming more than a frame can hold.
         assert!(reader(vec![0xFF, 0xFF, 0]).read_frame().is_err());
+    }
+
+    #[test]
+    fn partial_frame_error_does_not_retry_or_reuse_counter() {
+        struct PartialThenError {
+            bytes: Vec<u8>,
+            calls: usize,
+        }
+        impl Write for PartialThenError {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                if self.calls == 1 {
+                    let n = bytes.len().min(3);
+                    self.bytes.extend_from_slice(&bytes[..n]);
+                    Ok(n)
+                } else {
+                    Err(io::ErrorKind::ConnectionReset.into())
+                }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let key = Key([7; 32]);
+        let make_cipher = || cipher(&key, &[1; 32], b"horizon-friends v1 guest->host");
+        let mut expected = SecureWriter {
+            inner: Vec::new(),
+            cipher: make_cipher(),
+            counter: 0,
+        };
+        expected.write_data(b"payload").unwrap();
+        let mut writer = SecureWriter {
+            inner: PartialThenError {
+                bytes: Vec::new(),
+                calls: 0,
+            },
+            cipher: make_cipher(),
+            counter: 0,
+        };
+        let error = writer.write_data(b"payload").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(writer.inner.calls, 2);
+        assert_eq!(writer.inner.bytes, expected.inner[..3]);
+        assert_eq!(writer.counter, 1);
     }
 }

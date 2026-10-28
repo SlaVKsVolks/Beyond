@@ -4,6 +4,8 @@
 //! bytes between them. Those bytes are the end-to-end encrypted session
 //! (docs/play-with-friends.md): the relay can't read them, only count them.
 //! State is in memory; nothing about players is logged.
+#![forbid(unsafe_code)]
+
 pub mod limits;
 
 use horizon_friends::{
@@ -309,15 +311,15 @@ fn unmap(peer: SocketAddr) -> SocketAddr {
     }
 }
 
-fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Result<()> {
+fn handle(state: &Arc<State>, stream: TcpStream, peer: SocketAddr) -> io::Result<()> {
     if state.stop.load(Ordering::Relaxed) {
         return Ok(());
     }
     let mut peer = unmap(peer);
     // The first line (and an HTTP request) within `first_line` in all.
-    let first_line = horizon_friends::deadline(&stream, state.config.first_line)?;
     stream.set_read_timeout(Some(state.config.first_line))?;
     let _ = stream.set_nodelay(true);
+    let mut stream = horizon_friends::deadline(stream, state.config.first_line)?;
     let mut line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     if state.config.proxy_protocol {
         peer = proxy_line(&line)
@@ -328,7 +330,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     if line.starts_with(b"GET ") {
         return http(state, &mut stream, &line, peer);
     }
-    drop(first_line);
+    let mut stream = stream.cancel()?;
     let Ok(hello) = serde_json::from_slice::<ToRelay>(&line) else {
         return refuse(&mut stream, ErrorCode::BadRequest);
     };
@@ -349,7 +351,12 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     }
 }
 
-fn http(state: &State, stream: &mut TcpStream, line: &[u8], peer: SocketAddr) -> io::Result<()> {
+fn http(
+    state: &State,
+    stream: &mut (impl Read + Write),
+    line: &[u8],
+    peer: SocketAddr,
+) -> io::Result<()> {
     // Drain the request headers (bounded) before answering.
     let mut headers = 0;
     while let Some(h) = wire::read_line(stream)? {

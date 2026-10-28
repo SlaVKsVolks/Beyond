@@ -55,6 +55,19 @@ pub(crate) fn secure(stream: TcpStream, key: &Key, role: Role) -> io::Result<Sec
     crypto::secure(stream.try_clone()?, stream, key, role)
 }
 
+pub(crate) fn secure_deadline(
+    stream: crate::Deadline,
+    key: &Key,
+    role: Role,
+) -> io::Result<Secure> {
+    let (read, write) = stream.split()?;
+    let (reader, writer) = crypto::secure(read, write, key, role)?;
+    let (read, make_reader) = reader.into_parts();
+    let (write, make_writer) = writer.into_parts();
+    let (read, write) = crate::Deadline::reunite(read, write)?;
+    Ok((make_reader(read), make_writer(write)))
+}
+
 pub(crate) struct Established {
     pub secure: Secure,
     pub direct: bool,
