@@ -44,3 +44,8 @@ These 2026-10-28 decisions supersede the earlier pending-permission statements a
 - Windows gameplay, existing data and compatibility remain protected. Exact upstream source identity is not required; observable capabilities and the owner's Rust rules govern the redesign.
 
 The next bounded plan is [macOS-native removal and capability preservation](superpowers/plans/2026-10-28-beyond-platform-capabilities.md). Recording these decisions does not itself remove source, integrate the console prototype, complete the internal rename or establish compliance.
+## Approved implementation follow-up, 2026-10-28
+
+The owner approved execution of the bounded platform/capability plan. Three known macOS-native unsafe paths have now been removed: Apple thread QoS, `clonefile`, and AppKit title-bar appearance. Windows implementations and deferred Linux bodies remain unchanged. Launcher Cargo targets now have unconditional unsafe-code prohibition; its separately compiled console probe is still outside that gate. This is not a repository-wide macOS purge or the internal Beyond package/binary rename.
+
+The two memory diagnostic examples remain intact. The independently reviewed assessment found no established preserving replacement in the two audited published candidates. Exact requested-byte live/peak, failure/reallocation behavior, concurrency/reset and genuinely uninstrumented latency remain requirements, not sacrificed capabilities. See [Rust assurance](rust-assurance.md) for the source findings, proposed safe contract, test matrix and actual verification limits. Full compliance remains blocked; no release, deployment or merge into `main` is authorized by this work.

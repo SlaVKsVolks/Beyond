@@ -63,3 +63,8 @@
 ## Handoff
 
 The user supplied the platform/capability decisions and retained Terra/high subagent execution preference. This bounded plan requires review before implementation. MacOS removal is authorized; allocator capability reduction, Linux support work, diagnostic product redesign without an exact contract, and a full internal branding migration are not hidden inside this plan.
+## Execution readback, 2026-10-28
+
+Owner approved this plan. Task 1's bounded removal is integrated at `dc810e287` after independent specification/quality review; Windows and retained Linux source remain unchanged in the reviewed diff. Launcher Cargo-target unconditional forbid and its real-repository regression are in place. Task 2's read-only assessment and corrected hook/failure analysis passed independent review; neither candidate preserves the complete contract, so both diagnostic examples remain intact and their product redesign remains BLOCKED.
+
+Task 3 ran every prescribed final command, with exact results and the scratch-wrapper Python-path failure/recovery in [Rust assurance](../../rust-assurance.md). Formatting, both CI Clippy modes, full root tests/docs, launcher tests/forbid Clippy and Python tests passed. Unmodified readiness still exits 1 on four package-forbid gaps and the direct console probe; full-profile acceptance is not complete. No checks were weakened, no original diagnostic capability was removed, and no game/other-OS/MSRV/hosted-CI acceptance is claimed. Only reviewed repair-branch synchronization is authorized; main, release and deployment remain out of scope.
