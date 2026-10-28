@@ -8,10 +8,11 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::{Console::GetConsoleWindow, Threading::CREATE_NO_WINDOW};
+        use win32console::console::WinConsole;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
         let mut command = command;
-        // SAFETY: no arguments; it returns this process's console window or null.
-        if unsafe { GetConsoleWindow() }.is_null() {
+        // Presence includes a pseudoconsole handle even if its window is invisible.
+        if WinConsole::get_window().is_none() {
             command.creation_flags(CREATE_NO_WINDOW);
         }
         command

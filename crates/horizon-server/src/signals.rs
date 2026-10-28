@@ -26,16 +26,28 @@ pub fn install() {
 }
 
 #[cfg(windows)]
+pub(super) extern "system" fn handle(_: u32) -> i32 {
+    REQUESTS.fetch_add(1, Ordering::SeqCst);
+    1
+}
+
+#[cfg(windows)]
 pub fn install() {
-    unsafe extern "system" fn handle(_: u32) -> windows_sys::core::BOOL {
-        REQUESTS.fetch_add(1, Ordering::SeqCst);
-        1
-    }
-    // SAFETY: the handler only increments an atomic; it stays valid for the life of the process.
-    unsafe {
-        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(handle), 1);
-    }
+    // The published safe API owns the native registration boundary internally.
+    let _ = winconsole::console::set_ctrl_handler(Some(handle), true);
 }
 
 #[cfg(not(any(unix, windows)))]
 pub fn install() {}
+
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn every_callback_counts_synchronously_and_reports_handled() {
+        let before = super::requests();
+        for (index, event) in [0, 1, 2, 5, 6, u32::MAX, 0].into_iter().enumerate() {
+            assert_eq!(super::handle(event), 1);
+            assert_eq!(super::requests(), before + index as u32 + 1);
+        }
+    }
+}
