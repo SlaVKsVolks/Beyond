@@ -3,7 +3,7 @@
  "version": 1,
  "source": "roadmap/roadmap.toml",
  "overview": {
-  "today_plain": "Horizon is Minecraft: Java Edition 26.3 rewritten from scratch in Rust, so it runs faster on the same computer. Single player, LAN, servers, resource packs and Horizon's own mods work today, on your own copy of the game.",
+  "today_plain": "Horizon is Minecraft: Java Edition 26.3 rewritten from scratch in Rust, so it runs faster on the same computer. Single player, LAN, servers, resource packs and Horizon's own mods work today, on your own copy of the game. Our version targets Windows and Linux; macOS support is out of scope.",
   "today_dev": "A native Rust and wgpu reimplementation of Java 26.3: the same saves, rules and terrain, checked against the real game by more than 300 differential harnesses (a Java oracle and a Rust probe on the same inputs). Single player runs on its own server thread, like vanilla's integrated server.",
   "help_plain": "Play it and tell us what differs from vanilla (Discord or GitHub), run the benchmark on your computer, vote for what you want next, or pick one of the Help wanted items.",
   "help_dev": "Read CONTRIBUTING.md, pick a Help wanted item or a To do card, check vanilla's code for the behaviour, and paste the block `python3 tools/pr_ready.py` prints in your pull request."
@@ -366,7 +366,7 @@
    "status": "next",
    "area": "performance",
    "plain": "New public numbers comparing Horizon with vanilla on many kinds of computers, measured the same way every time, with a history that shows what each release changed.",
-   "dev": "Redo the comparison after the current performance work (#1073); reliability, coverage and presentation (#1346); a scene must count as loaded only once its first chunk arrives (#1749). Next: a performance history across releases (an automatic comparison of each release with the last, on a timeline), more report fields (server TPS and MSPT, power, battery drain, temperature, throttling) and more hardware (a MacBook on battery, low-end laptops, community reports). Players' reports come in through `--benchmark` and `horizon-launcher data benchmark` (docs/benchmark.md).",
+   "dev": "Redo the comparison after the current performance work (#1073); reliability, coverage and presentation (#1346); a scene must count as loaded only once its first chunk arrives (#1749). Next: a performance history across releases (an automatic comparison of each release with the last, on a timeline), more report fields (server TPS and MSPT, power, battery drain, temperature, throttling) and more supported hardware (Windows/Linux laptops on battery, low-end laptops, community reports). macOS benchmarking is out of scope. Players' reports come in through `--benchmark` and `horizon-launcher data benchmark` (docs/benchmark.md).",
    "links": [
     "#1073",
     "#1346",
@@ -387,19 +387,6 @@
     "#1608",
     "#1704",
     "#1758"
-   ]
-  },
-  {
-   "id": "intel-mac",
-   "title": "Horizon on Intel Macs",
-   "status": "next",
-   "area": "platforms",
-   "plain": "Builds of the game and the launcher for Macs with an Intel processor.",
-   "dev": "x86_64 game and launcher builds, picked per processor (#1171). Before it ships it needs a run on a real Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: #1161, #1792.",
-   "links": [
-    "#1171",
-    "#1161",
-    "#1792"
    ]
   },
   {
@@ -427,11 +414,11 @@
   },
   {
    "id": "low-end-mode",
-   "title": "Low-end computers: Steam Deck, old Macs, 8 GB",
+   "title": "Low-end computers: Steam Deck, integrated graphics, 8 GB",
    "status": "next",
    "area": "performance",
-   "plain": "Horizon should run well on small machines: integrated graphics, the Steam Deck, older Macs and 8 GB of memory, with a battery mode that saves power on laptops.",
-   "dev": "Partly done: an opt-in 60 FPS cap with fewer workers on battery, Far Detail Reduced for integrated GPUs and animated textures on the GPU (both shipped). Left: measured targets and fixes per class of machine (memory use, worker counts, startup) on a Steam Deck, old Intel and Apple Silicon Macs and 8 GB computers, reported on the Benchmarks page.",
+   "plain": "Horizon should run well on small Windows/Linux machines: integrated graphics, the Steam Deck and 8 GB of memory, with a battery mode that saves power on laptops.",
+   "dev": "Partly done: an opt-in 60 FPS cap with fewer workers on battery, Far Detail Reduced for integrated GPUs and animated textures on the GPU (both shipped). Left: measured targets and fixes per class of machine (memory use, worker counts, startup) on a Steam Deck and Windows/Linux computers with integrated graphics and 8 GB, reported on the Benchmarks page. Intel and Apple Silicon Mac targets are out of scope.",
    "links": [
     "docs/benchmark.md",
     "website/docs/performance.md"
@@ -712,7 +699,7 @@
    "status": "next",
    "area": "project",
    "plain": "Every download Horizon makes is checked against the project's signature, including the first install with install.sh and install.ps1.",
-   "dev": "Releases carry signed checksums, and the launcher and `horizon-server update` refuse anything unsigned (#1011, #1014). Left: the first install through `install.sh` and `install.ps1` still trusts only the checksum GitHub publishes, because verifying Ed25519 signatures needs OpenSSL 3, which macOS doesn't ship (docs/security.md).",
+   "dev": "Releases carry signed checksums, and the launcher and `horizon-server update` refuse anything unsigned (#1011, #1014). Left: the first install through `install.sh` and `install.ps1` still trusts only the checksum GitHub publishes. Verify Ed25519 signatures for supported Windows/Linux installs without weakening signature checks (docs/security.md). macOS OpenSSL availability and installer support are out of scope.",
    "links": [
     "docs/security.md"
    ]
@@ -881,7 +868,7 @@
    "status": "later",
    "area": "rendering",
    "plain": "An optional ray-tracing mode for graphics cards that support it (RTX and recent AMD): shadows, water reflections and global lighting on top of the vanilla look.",
-   "dev": "A spike with ray-traced sun shadows, off by default, is a draft (#1180). Reflections, global illumination, Apple M3 and newer if it is cheap, and a performance report per card come after.",
+   "dev": "A spike with ray-traced sun shadows, off by default, is a draft (#1180). Reflections, global illumination, and a performance report per supported Windows/Linux card come after. Apple GPU/macOS targets are out of scope.",
    "links": [
     "#1180"
    ]
@@ -892,7 +879,7 @@
    "status": "later",
    "area": "rendering",
    "plain": "Output for HDR monitors: brighter highlights and richer colour where your screen supports it.",
-   "dev": "Issue #1441. Needs a surface format and a tone-mapping path per backend, and tests on real HDR screens on Windows, macOS and Linux.",
+   "dev": "Issue #1441. Needs a surface format and a tone-mapping path per backend, and tests on real HDR screens on Windows and Linux. macOS HDR support and tests are out of scope.",
    "links": [
     "#1441"
    ]
@@ -1219,7 +1206,7 @@
    "status": "next",
    "area": "servers",
    "plain": "Install and run a Horizon dedicated server from a terminal with a single command, no launcher needed, for VPSes and headless machines.",
-   "dev": "A player's idea (#horizon-ideas). `horizon-server` already runs headless; left: an install script (Linux/macOS shell, Windows PowerShell) that fetches the signed release, checks it, asks for or points at the player's own game files and starts the server, documented in docs/hosting.md.",
+   "dev": "A player's idea (#horizon-ideas). `horizon-server` already runs headless; left: an install script (Linux shell, Windows PowerShell) that fetches the signed release, checks it, asks for or points at the player's own game files and starts the server, documented in docs/hosting.md. macOS installation is out of scope.",
    "links": [
     "docs/hosting.md"
    ]
