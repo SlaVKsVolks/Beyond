@@ -103,3 +103,18 @@ workspace = true
 [dev-dependencies]
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
+# Compile-time optional metrics for model_library_bench and its safe process fixtures.
+alloc-metrics = { version = "=0.1.1", default-features = false, features = ["global"] }
+# Deterministic fallible-allocation qualification; never used by the benchmark.
+cap = { version = "=0.1.2", default-features = false }
+allocator-api2 = { version = "=0.4.0", default-features = false, features = ["std"] }
+
+[[test]]
+name = "model_allocator_failure"
+path = "tests/model_allocator_failure.rs"
+harness = false
+
+[[test]]
+name = "model_allocator_mode"
+path = "tests/model_allocator_mode.rs"
+harness = false

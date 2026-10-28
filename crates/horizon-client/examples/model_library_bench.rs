@@ -2,68 +2,34 @@
 //! for live requested heap bytes; leave it unset for latency measurements.
 //! cargo run --profile fast -p horizon-client --example model_library_bench -- ROOT [--parity]
 //! Run fresh processes, warm up twice, then compare multiple alternating baseline/candidate runs.
+#![forbid(unsafe_code)]
+
+#[path = "support/model_bench_allocator.rs"]
+mod model_bench_allocator;
+
 use horizon_client::{assets::Assets, item_render::ItemRenderer};
 use std::{
-    alloc::{GlobalAlloc, Layout, System},
     hash::{Hash, Hasher},
     path::Path,
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
     time::Instant,
 };
-
-struct CountingAllocator;
-const TRACK: bool = option_env!("HORIZON_BENCH_COUNT_ALLOCATIONS").is_some();
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-// The allocator delegates every operation and layout unchanged to System.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc(layout) };
-        if TRACK && !ptr.is_null() {
-            LIVE.fetch_add(layout.size(), Relaxed);
-        }
-        ptr
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc_zeroed(layout) };
-        if TRACK && !ptr.is_null() {
-            LIVE.fetch_add(layout.size(), Relaxed);
-        }
-        ptr
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if TRACK {
-            LIVE.fetch_sub(layout.size(), Relaxed);
-        }
-        unsafe { System.dealloc(ptr, layout) };
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        let out = unsafe { System.realloc(ptr, layout, size) };
-        if TRACK && !out.is_null() {
-            LIVE.fetch_sub(layout.size(), Relaxed);
-            LIVE.fetch_add(size, Relaxed);
-        }
-        out
-    }
-}
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn main() -> horizon_client::Result<()> {
     let root = std::env::args()
         .nth(1)
         .ok_or("usage: model_library_bench ROOT [--parity]")?;
     let root = Path::new(&root);
-    let initial = LIVE.load(Relaxed);
+    let initial = model_bench_allocator::live_bytes();
     let start = Instant::now();
     let assets = Assets::load(root)?;
     let render = assets.reload(root)?;
     let block_ms = start.elapsed().as_secs_f64() * 1000.;
-    let block_retained = LIVE.load(Relaxed) - initial;
+    let block_retained = model_bench_allocator::live_bytes() - initial;
     let start_items = Instant::now();
     let items = ItemRenderer::load_with_library(root, render.model_library.clone())?;
     let item_ms = start_items.elapsed().as_secs_f64() * 1000.;
     let total_ms = start.elapsed().as_secs_f64() * 1000.;
-    let retained = LIVE.load(Relaxed) - initial;
+    let retained = model_bench_allocator::live_bytes() - initial;
     println!(
         "block_ms={block_ms:.3} item_ms={item_ms:.3} total_ms={total_ms:.3} retained_bytes={retained} block_retained_bytes={block_retained}"
     );
