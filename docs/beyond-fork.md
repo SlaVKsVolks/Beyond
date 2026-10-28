@@ -33,3 +33,14 @@ The owner asked for this explanation. **No permission to remove those tools or p
 ## Next implementation boundary
 
 A full internal Beyond rename needs a scoped migration plan and tests for Cargo/build-tool references, binaries/UI, compatibility identifiers, update/service identity and data lookup. A Rust-compliance redesign needs an approved contract stating which upstream diagnostics or deferred-platform behavior may change. Neither is accomplished by merely changing the repository name or by editing this document.
+
+## Later explicit owner decisions: capabilities and platforms
+
+These 2026-10-28 decisions supersede the earlier pending-permission statements above:
+
+- macOS-specific first-party code may be removed. Deleting obsolete code is preferred to leaving commented-out unsafe implementations; upstream history and attribution remain preserved. This does not authorize modifying vendored/dependency source, changing remote CI, or deleting history.
+- Linux support is deferred. Do not claim Linux support/validation, and do not weaken checks or hide Linux unsafe just to obtain a passing result. Retained unresolved Linux boundaries stay explicit until a safe implementation and appropriate evidence exist.
+- Beyond must retain the original project's other capabilities, including memory-measuring tools. Their implementation may be redesigned or improved; deleting the tools, silently substituting RSS for requested bytes, or discarding peak/failure/reallocation accounting is not an acceptable compliance fix.
+- Windows gameplay, existing data and compatibility remain protected. Exact upstream source identity is not required; observable capabilities and the owner's Rust rules govern the redesign.
+
+The next bounded plan is [macOS-native removal and capability preservation](superpowers/plans/2026-10-28-beyond-platform-capabilities.md). Recording these decisions does not itself remove source, integrate the console prototype, complete the internal rename or establish compliance.
