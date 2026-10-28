@@ -1,3 +1,17 @@
+# Beyond
+
+**Beyond** is SlaVKsVolks' independently developed fork of **Horizon**. Its implementation may diverge from upstream to meet the owner's requirements and custom Rust rules; upstream implementation parity is not a requirement in itself.
+
+This fork currently focuses on Windows. Rust compliance and the internal product/package rename are **not complete**. The standalone safe-console prototype is not integrated, and the remaining blockers are recorded in [the Rust assurance ledger](docs/rust-assurance.md). Existing save/configuration paths and protocol identifiers have not been renamed or migrated.
+
+- Repository: [SlaVKsVolks/Beyond](https://github.com/SlaVKsVolks/Beyond).
+- [Fork identity, scope and migration status](docs/beyond-fork.md).
+- No Beyond release, installer or deployment is announced by this rename.
+
+## Upstream Horizon reference
+
+The material below is retained from upstream for reference and attribution. Its branding, downloads, badges, service links and platform/parity claims describe **Horizon upstream**, not verified Beyond builds or services.
+
 <p align="center">
   <img src="docs/media/banner.webp" alt="Horizon: Minecraft: Java Edition 26.3, rewritten in Rust and checked against vanilla by 281 differential harnesses" width="100%">
 </p>
