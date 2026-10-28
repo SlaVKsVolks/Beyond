@@ -15,6 +15,17 @@ from tools.check_rust_safety import WORKSPACES, audit, contained_path, main
 
 
 class RepositoryRustSafetyTests(unittest.TestCase):
+    def test_prepare_has_unconditional_package_enforcement(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        issues = audit(root, WORKSPACES)
+        manifest = str(Path('crates/horizon-prepare/Cargo.toml'))
+        relevant = [
+            issue for issue in issues
+            if issue.startswith((f'{manifest}:', 'Cargo.toml: Cargo metadata failed:',
+                                 'manifest discovery/parsing failed:', 'TOML parser unavailable;'))
+        ]
+        self.assertEqual([], relevant, relevant)
+
     def test_standalone_console_cargo_package_is_enforced(self) -> None:
         root = Path(__file__).resolve().parents[1]
         manifest = Path('launcher/tests/support/console-probe/Cargo.toml')

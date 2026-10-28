@@ -12,11 +12,14 @@ sha1 = "0.10"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-libc = "0.2"
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.5", default-features = false, features = ["fs", "std"] }
 
 [build-dependencies]
 sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [[bin]]
 name = "horizon-prepare"

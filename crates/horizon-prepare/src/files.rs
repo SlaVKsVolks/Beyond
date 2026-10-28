@@ -9,18 +9,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "sparc", target_arch = "sparc64"))
+    ))]
     {
-        use std::os::fd::AsRawFd;
         let source = fs::File::open(from)?;
         let target = fs::File::create(to)?;
-        // SAFETY: FICLONE takes a source fd, both descriptors stay open for the call.
-        if unsafe { libc::ioctl(target.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
+        rustix::fs::ioctl_ficlone(&target, &source).map_err(Into::into)
     }
-    #[cfg(not(target_os = "linux"))]
+    // rustix does not expose FICLONE on SPARC; the caller uses an independent copy.
+    #[cfg(any(
+        not(target_os = "linux"),
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))]
     {
         let _ = (from, to);
         Err(io::ErrorKind::Unsupported.into())
