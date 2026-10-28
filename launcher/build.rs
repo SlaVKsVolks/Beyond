@@ -1,5 +1,6 @@
 //! Embeds Horizon's icon (`packaging/icons/horizon.ico`) in the Windows executables, as icon
 //! resource 1: Explorer and the task bar show it, and the window takes it as its icon.
+#![cfg_attr(windows, forbid(unsafe_code))]
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let ico = format!("{dir}/../packaging/icons/horizon.ico");

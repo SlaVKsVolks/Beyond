@@ -1,6 +1,7 @@
 //! Horizon launcher: installs Horizon builds, prepares them from the player's own Minecraft,
 //! and starts the client or a dedicated server.
 
+#![cfg_attr(windows, forbid(unsafe_code))]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod agents_page;

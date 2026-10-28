@@ -1,4 +1,5 @@
 //! Full launcher startup against instrumented Windows hardware probes.
+#![cfg_attr(windows, forbid(unsafe_code))]
 #![cfg(windows)]
 
 mod support;
