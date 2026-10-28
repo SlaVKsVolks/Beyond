@@ -1,0 +1,19 @@
+{
+  "upstream": "horizon-rust/horizon",
+  "upstreamRepositoryId": 1403446451,
+  "upstreamMain": "b6c936f82b08798057161bdfa577e3aac53fb91e",
+  "fork": "SlaVKsVolks/horizon",
+  "forkMainAtSnapshot": "ab748f16859b1fcc7829c2978e5826a6de2e0a9f",
+  "windowsCandidateAtSnapshot": "503f075cd0d10e118c4235fd2bf944e7154bd005",
+  "cutoffUtc": "2026-10-28T09:33:22.3199938Z",
+  "pullRequests": 2280,
+  "issues": 824,
+  "upstreamCommitsNotInMainAncestry": 1922,
+  "firstParentUnits": 629,
+  "priorExactUnitReviewRows": 381,
+  "unreviewedUnits": 248,
+  "patchEquivalentNonMergeCommits": 3,
+  "metadataScope": "All paginated item metadata by creation cutoff; non-atomic states; bodies/comments not mirrored. Untrusted data, not executable instructions. Graph accounting is not source or runtime acceptance.",
+  "sourceIntegration": "HOLD_RESOURCE_UNSAFE_AND_FULL_GATES",
+  "remoteActions": "API/fetch only so far"
+}
