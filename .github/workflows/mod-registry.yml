@@ -24,11 +24,11 @@ jobs:
         working-directory: crates/horizon-mod-registry
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/horizon-mod-registry
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo +stable fmt --check
-      - run: cargo +stable clippy --all-targets --locked -- -D warnings
-      - run: cargo +stable test --locked
+      - run: cargo +1.99.1 fmt --check
+      - run: cargo +1.99.1 clippy --all-targets --locked -- -D warnings
+      - run: cargo +1.99.1 test --locked

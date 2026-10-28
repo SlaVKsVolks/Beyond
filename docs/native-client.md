@@ -14,7 +14,7 @@ missing; [Rust rewrite status](rust-parity.md) has the details.
 
 ## Run from a checkout
 
-Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
+Use the project-pinned Rust 1.99.1 and JDK 25 (Python 3.10+ only for the development
 harnesses). Horizon never
 downloads the game: resource preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
@@ -421,7 +421,7 @@ It calls native `ModelDiscovery`, `ResolvedModel` and `TextureSlots` APIs.
 
 ```sh
 python3 tools/test_model_resolution_parity.py
-cargo +stable test --locked -p horizon-assets
+cargo +1.99.1 test --locked -p horizon-assets
 ```
 
 Cuboid baking now produces positions in block units, normalized unit-atlas UVs,
@@ -531,8 +531,8 @@ checks the renderer using this shared implementation. Images, input
 fixtures and native traces stay private under `.local/`.
 
 ```sh
-cargo +stable test -p horizon-client
-cargo +stable clippy --workspace --all-targets -- -D warnings
+cargo +1.99.1 test -p horizon-client
+cargo +1.99.1 clippy --workspace --all-targets -- -D warnings
 python3 tools/test_native_client.py
 # Headless Linux alternative:
 python3 tools/test_native_client.py --vscreen

@@ -1,4 +1,4 @@
-"""Catch first-party MSRV promises below required local package minimums."""
+"""Enforce Beyond's compiler floor and local dependency compatibility."""
 
 import json
 from pathlib import Path
@@ -29,9 +29,12 @@ class RepositoryRustMsrvTests(unittest.TestCase):
 
         checked = 0
         for name, minimum, dependencies in packages.values():
+            with self.subTest(package=name):
+                self.assertEqual(minimum, '1.99.1',
+                                 f'{name} must require the project Rust 1.99.1 minimum')
             if minimum is None:
-                continue  # No declared promise; this test does not invent one.
-            # Cargo accepts both 1.85 and 1.85.0 as the same Rust floor.
+                continue  # The policy assertion above already reports this invalid package.
+            # Cargo normalizes two- and three-component Rust floors.
             version = tuple(map(int, (minimum.split('.') + ['0', '0'])[:3]))
             for path in dependencies:
                 local = packages.get(path)

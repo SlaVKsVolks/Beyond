@@ -32,15 +32,15 @@ RESULT = ROOT / ".local" / "gate.json"
 
 def steps(args):
     yield "public tree", [sys.executable, "tools/check_public_tree.py"]
-    yield "rustfmt", ["cargo", "+stable", "fmt", "--all", "--", "--check"]
-    yield "clippy", ["cargo", "+stable", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+    yield "rustfmt", ["cargo", "+1.99.1", "fmt", "--all", "--", "--check"]
+    yield "clippy", ["cargo", "+1.99.1", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
     if args.quick:
         yield "python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"]
         return
     # Clippy has already compiled the examples; building them again for the
     # test run is most of the time and disk `cargo test --workspace` takes.
-    yield "rust tests", ["cargo", "+stable", "test", "--locked", "--workspace", "--lib", "--bins", "--tests"]
-    yield "doc tests", ["cargo", "+stable", "test", "--locked", "--workspace", "--doc"]
+    yield "rust tests", ["cargo", "+1.99.1", "test", "--locked", "--workspace", "--lib", "--bins", "--tests"]
+    yield "doc tests", ["cargo", "+1.99.1", "test", "--locked", "--workspace", "--doc"]
     yield "python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"]
     if not args.no_parity:
         command = [sys.executable, "tools/parity.py", *(["-j", str(args.jobs)] if args.jobs is not None else [])]

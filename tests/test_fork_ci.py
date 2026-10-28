@@ -39,11 +39,11 @@ class ForkValidationTests(unittest.TestCase):
     def test_rust_acceptance_commands_are_not_reduced(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
         for command in (
-            "cargo +stable fmt --all -- --check",
-            "cargo +stable clippy --workspace --all-targets --features horizon-client/mods -- -D warnings",
-            "cargo +stable clippy -p horizon-client --all-targets --no-default-features -- -D warnings",
-            "cargo +stable test --workspace --lib --bins --tests --features horizon-client/mods,horizon-mods/pack",
-            "cargo +stable test --workspace --doc --features horizon-client/mods,horizon-mods/pack",
+            "cargo +1.99.1 fmt --all -- --check",
+            "cargo +1.99.1 clippy --workspace --all-targets --features horizon-client/mods -- -D warnings",
+            "cargo +1.99.1 clippy -p horizon-client --all-targets --no-default-features -- -D warnings",
+            "cargo +1.99.1 test --workspace --lib --bins --tests --features horizon-client/mods,horizon-mods/pack",
+            "cargo +1.99.1 test --workspace --doc --features horizon-client/mods,horizon-mods/pack",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, text)

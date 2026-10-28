@@ -120,9 +120,9 @@ Negative lengths and the complete Java object/API surface are not supported.
 
 ## Reproduce validation
 
-The core/world libraries require Rust 1.85 or newer; the native client's locked
-dependencies require Rust 1.90 or newer. Use current stable Rust, Python 3.10 or
-newer, and JDK 25 for the complete workspace. From the checkout:
+Beyond requires Rust 1.99.1, selected by the root `rust-toolchain.toml`; older
+compilers are unsupported. Use Python 3.10 or newer and JDK 25 for the complete
+workspace. From the checkout:
 
 ```sh
 cargo test --workspace
