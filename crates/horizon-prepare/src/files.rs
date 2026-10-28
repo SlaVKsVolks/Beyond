@@ -20,22 +20,7 @@ fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
         }
         Err(io::Error::last_os_error())
     }
-    #[cfg(target_os = "macos")]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let path = |p: &Path| {
-            CString::new(p.as_os_str().as_bytes())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
-        };
-        let (source, target) = (path(from)?, path(to)?);
-        // SAFETY: both paths are valid NUL-terminated strings for the duration of the call.
-        if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (from, to);
         Err(io::ErrorKind::Unsupported.into())

@@ -11,8 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// (`Thread.setPriority(8)` when there are more than four processors), so
 /// world generation and chunk encoding on every other core don't hold a tick
 /// back (the client asks the same for its render thread, so they don't hold
-/// a frame back either): user-interactive quality of service on macOS,
-/// above-normal priority on Windows. Nothing elsewhere: Linux lets an
+/// a frame back either): above-normal priority on Windows. Nothing elsewhere: Linux lets an
 /// unprivileged thread lower its priority but not raise it (and the JVM
 /// leaves it there too). Whether the OS took it.
 #[cfg(not(windows))]
@@ -36,14 +35,6 @@ fn favour_with_parallelism(parallelism: std::io::Result<std::num::NonZeroUsize>)
     favour()
 }
 
-#[cfg(target_vendor = "apple")]
-fn favour() -> bool {
-    // SAFETY: sets the calling thread's own QoS class; no pointers.
-    unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) == 0
-    }
-}
-
 #[cfg(windows)]
 fn favour() -> bool {
     set_windows_priority(thread_priority::WinAPIThreadPriority::AboveNormal)
@@ -55,7 +46,7 @@ fn set_windows_priority(priority: thread_priority::WinAPIThreadPriority) -> bool
         .is_ok()
 }
 
-#[cfg(not(any(target_vendor = "apple", windows)))]
+#[cfg(not(windows))]
 fn favour() -> bool {
     false
 }
@@ -111,8 +102,7 @@ fn behind() -> bool {
 
 /// Run the calling thread only on a core nothing else wants: work that may
 /// take seconds and that nothing waits for yet (the stronghold rings while a
-/// world opens). The idle class on Linux, background quality of service on
-/// macOS, idle priority on Windows. Whether the OS took it.
+/// world opens). The idle class on Linux, idle priority on Windows. Whether the OS took it.
 pub fn idle_current() -> bool {
     idle()
 }
@@ -125,18 +115,12 @@ fn idle() -> bool {
     unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0 }
 }
 
-#[cfg(target_vendor = "apple")]
-fn idle() -> bool {
-    // SAFETY: sets the calling thread's own QoS class; no pointers.
-    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0) == 0 }
-}
-
 #[cfg(windows)]
 fn idle() -> bool {
     set_windows_priority(thread_priority::WinAPIThreadPriority::Idle)
 }
 
-#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn idle() -> bool {
     false
 }
@@ -147,24 +131,7 @@ mod tests {
     #[test]
     fn favouring_a_thread_takes_where_the_os_allows_it() {
         let took = std::thread::spawn(super::favour).join().unwrap();
-        assert_eq!(took, cfg!(any(target_vendor = "apple", windows)));
-        #[cfg(target_vendor = "apple")]
-        std::thread::spawn(|| {
-            assert!(super::favour());
-            let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
-            let mut relative = 0;
-            // SAFETY: reads the calling thread's own QoS class into locals.
-            let read = unsafe {
-                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative)
-            };
-            assert_eq!(read, 0);
-            assert!(matches!(
-                class,
-                libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE
-            ));
-        })
-        .join()
-        .unwrap();
+        assert_eq!(took, cfg!(windows));
     }
 
     /// A helper goes behind only once a dedicated server asks for it, and
@@ -197,14 +164,11 @@ mod tests {
         assert!(!std::thread::spawn(super::behind_server).join().unwrap());
     }
 
-    /// The idle hint holds on the three platforms.
+    /// The idle hint holds on the supported platforms.
     #[test]
     fn idling_a_thread_takes() {
         let took = std::thread::spawn(super::idle_current).join().unwrap();
-        assert_eq!(
-            took,
-            cfg!(any(target_os = "linux", target_vendor = "apple", windows))
-        );
+        assert_eq!(took, cfg!(any(target_os = "linux", windows)));
         #[cfg(target_os = "linux")]
         std::thread::spawn(|| {
             assert!(super::idle_current());
