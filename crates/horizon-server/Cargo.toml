@@ -27,17 +27,30 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 # SIGINT/SIGTERM/SIGHUP: stop the game cleanly when the terminal or the service manager asks.
-libc = "0.2"
+nix = { version = "=0.31.3", default-features = false, features = ["signal"] }
+signal-hook = { version = "=0.3.18", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 win32console = "=0.1.5"
 winconsole = "=0.11.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+# Preserve the existing inherited policy; the audit rejects workspace-policy drift.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
 
 [[test]]
 name = "windows_console"
 path = "tests/windows_console.rs"
+harness = false
+
+[[test]]
+name = "unix_signals"
+path = "tests/unix_signals.rs"
 harness = false

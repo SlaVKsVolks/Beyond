@@ -27,11 +27,12 @@ fn main() {
     }
 
     if std::env::args().nth(1).as_deref() == Some("--horizon-console-child") {
-        signals::install();
+        let mut stop_requests = signals::observer().expect("install Windows stop observer");
         assert_eq!(signals::requests(), 0);
         for (index, event) in [0, 1, 2, 5, 6, u32::MAX, 0].into_iter().enumerate() {
             assert_eq!(signals::handle(event), 1);
             assert_eq!(signals::requests(), index as u32 + 1);
+            assert_eq!(stop_requests.requests(), index as u32 + 1);
         }
         let present = WinConsole::get_window().is_some();
         let mut input = String::new();

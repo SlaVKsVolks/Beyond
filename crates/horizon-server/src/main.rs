@@ -17,6 +17,9 @@ mod process;
 mod reference;
 mod service;
 mod settings;
+#[cfg(test)]
+#[path = "signals/pending_tests.rs"]
+mod signal_pending_tests;
 mod signals;
 mod supervisor;
 mod update;
