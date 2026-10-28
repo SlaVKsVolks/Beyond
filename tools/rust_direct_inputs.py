@@ -12,7 +12,6 @@ CONSOLE = Path('launcher/tests/support/console_probe.rs')
 RUST_DRIVERS = {
     Path('launcher/src/backend/java_tests.rs'): 'java_probe.rs',
     Path('crates/horizon-prepare/tests/java_selection.rs'): 'java_probe.rs',
-    Path('launcher/tests/support/mod.rs'): 'console_probe.rs',
 }
 GENERATORS = {Path('tests/test_world_input_capture.py'), Path('tests/test_remote_mining.py')}
 SPRITE = Path('tools/bench_sprite_mips.py')
@@ -76,8 +75,8 @@ def audit_direct_inputs(root: Path) -> list[str]:
             issues.append(f'{path}: cannot audit: {error}')
     if JAVA in texts and BAN not in texts[JAVA].splitlines()[:4]:
         issues.append(f'{JAVA}: crate-root unsafe forbid missing')
-    if CONSOLE in texts:
-        issues.append(f'{CONSOLE}: native console visibility probe uses unsafe; direct compilation remains blocked')
+    if CONSOLE in texts and BAN not in texts[CONSOLE].splitlines()[:4]:
+        issues.append(f'{CONSOLE}: crate-root unsafe forbid missing')
     for path, source in RUST_DRIVERS.items():
         if path not in texts:
             continue
@@ -88,7 +87,7 @@ def audit_direct_inputs(root: Path) -> list[str]:
         direct = calls and re.search(r'\.arg\([^;]*?\.join\("[^"]*' + re.escape(source) + r'"\)\)', calls[0], re.S)
         if len(calls) != 1 or not (binding or direct):
             issues.append(f'{path}: rustc invocation or source binding requires review')
-        elif source != 'console_probe.rs' and not re.search(r'\.arg\("-Funsafe_code"\)', calls[0]):
+        elif not re.search(r'\.arg\("-Funsafe_code"\)', calls[0]):
             issues.append(f'{path}: rustc unsafe forbid flag missing')
     for path in sorted(GENERATORS):
         if path not in texts:

@@ -11,15 +11,24 @@ from unittest.mock import patch
 import unittest
 from pathlib import Path
 
-from tools.check_rust_safety import audit, contained_path, main
+from tools.check_rust_safety import WORKSPACES, audit, contained_path, main
 
 
 class RepositoryRustSafetyTests(unittest.TestCase):
+    def test_standalone_console_cargo_package_is_enforced(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = Path('launcher/tests/support/console-probe/Cargo.toml')
+        self.assertIn(manifest, WORKSPACES)
+        issues = audit(root, WORKSPACES)
+        console_issues = [issue for issue in issues if 'console-probe' in issue]
+        self.assertEqual(console_issues, [], console_issues)
+
     def test_launcher_has_unconditional_package_enforcement(self) -> None:
         root = Path(__file__).resolve().parents[1]
         workspaces = {
             Path('Cargo.toml'),
             Path('launcher/Cargo.toml'),
+            Path('launcher/tests/support/console-probe/Cargo.toml'),
             Path('crates/horizon-telemetry-server/Cargo.toml'),
             Path('crates/horizon-mod-registry/Cargo.toml'),
         }

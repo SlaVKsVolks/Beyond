@@ -7,6 +7,12 @@ from tools import rust_direct_inputs
 
 
 class DirectInputsTests(unittest.TestCase):
+    def test_repository_console_fixture_has_enforced_safe_cargo_target(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        issues = rust_direct_inputs.audit_direct_inputs(root)
+        console_issues = [issue for issue in issues if 'console' in issue.lower()]
+        self.assertEqual(console_issues, [], console_issues)
+
     def test_unknown_compiler_driver_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -72,8 +78,25 @@ class DirectInputsTests(unittest.TestCase):
             root = Path(directory)
             self.write_known_inputs(root)
             issues = rust_direct_inputs.audit_direct_inputs(root)
-            self.assertEqual(len(issues), 1, issues)
-            self.assertTrue(any("console_probe.rs" in issue for issue in issues), issues)
+            self.assertEqual(issues, [], issues)
+
+    def test_console_fixture_without_root_forbid_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_known_inputs(root)
+            (root / 'launcher/tests/support/console_probe.rs').write_text('fn main() {}\n')
+            issues = rust_direct_inputs.audit_direct_inputs(root)
+            self.assertTrue(any('console_probe.rs' in issue and 'forbid missing' in issue
+                                for issue in issues), issues)
+
+    def test_console_driver_cannot_return_to_direct_compilation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_known_inputs(root)
+            (root / 'launcher/tests/support/mod.rs').write_text('command("rustc").arg("console_probe.rs").output();')
+            issues = rust_direct_inputs.audit_direct_inputs(root)
+            self.assertTrue(any('support' in issue and 'unreviewed direct rustc' in issue
+                                for issue in issues), issues)
 
     def test_missing_generator_flag_and_root_ban_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -88,10 +111,10 @@ class DirectInputsTests(unittest.TestCase):
     def write_known_inputs(self, root):
         paths = {
             "crates/horizon-prepare/tests/support/java_probe.rs": "#![forbid(unsafe_code)]\nfn main() {}\n",
-            "launcher/tests/support/console_probe.rs": "fn main() {}\n",
+            "launcher/tests/support/console_probe.rs": "#![forbid(unsafe_code)]\nfn main() {}\n",
             "launcher/src/backend/java_tests.rs": 'let source = Path::new("x").join("java_probe.rs"); command("rustc").arg(source).arg("-Funsafe_code").output();',
             "crates/horizon-prepare/tests/java_selection.rs": 'command("rustc").arg(Path::new("x").join("java_probe.rs")).arg("-Funsafe_code").output();',
-            "launcher/tests/support/mod.rs": 'let source = Path::new("x").join("console_probe.rs"); command("rustc").arg(source).output();',
+            "launcher/tests/support/mod.rs": 'command("cargo").args(["build", "--locked", "--offline"]).output();',
             "tests/test_world_input_capture.py": 'fixture = "#![forbid(unsafe_code)]\\nfn main() {}"\np.write_text(fixture)\nsubprocess.run(["rustc", "-Funsafe_code", str(p)])\n',
             "tests/test_remote_mining.py": 'fixture = "#![forbid(unsafe_code)]\\nfn main() {}"\np.write_text(fixture)\nsubprocess.run(["rustc", "-Funsafe_code", str(p)])\n',
             "tools/bench_sprite_mips.py": '(build / "main.rs").write_text("#![forbid(unsafe_code)]\\n" + code)\n(build / "Cargo.toml").write_text("[lints.rust]\\nunsafe_code = \\\"forbid\\\"\\n")\n',

@@ -23,6 +23,7 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACES = {Path('Cargo.toml'), Path('launcher/Cargo.toml'),
+              Path('launcher/tests/support/console-probe/Cargo.toml'),
               Path('crates/horizon-telemetry-server/Cargo.toml'),
               Path('crates/horizon-mod-registry/Cargo.toml')}
 SKIP_DIRS = {Path('.git'), Path('.local'), Path('.superpowers'), Path('target'),
