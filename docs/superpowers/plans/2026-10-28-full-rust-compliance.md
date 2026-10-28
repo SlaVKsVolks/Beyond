@@ -11,7 +11,7 @@
 - No new/expanded first-party unsafe, relocation into generated/C/macros/custom dependencies, weakened tests/lints or feature exclusion tricks.
 - Retain original diagnostic capabilities, requested live/step peak/realloc/failure accounting, workload/fingerprint and genuinely uninstrumented latency baseline. A concrete preserving allocator implementation must be established before edits.
 - Windows behavior and player data remain protected. Linux support deferred, not an exemption for retained unsafe source; macOS native removal already done.
-- Preserve exact editions/MSRVs, target/workspace layout, existing provider/model/recovery policy, apps/games, attribution/history. No deploy/release/main promotion/force push. Only reviewed repair-branch sync remains authorized.
+- Preserve editions, target/workspace layout, existing provider/model/recovery policy, apps/games, attribution/history. The owner's later explicit approval permits correcting only demonstrated inconsistent MSRV declarations to existing dependency requirements; do not upgrade dependencies or raise the workspace baseline. No deploy/release/main promotion/force push. Only reviewed repair-branch sync remains authorized.
 - Every meaningful change has pre-edit contract, real fail-before/pass-after evidence where applicable, independent review and target/lint proof. External/platform/CI/toolchain/fixture acceptance is not inferred from source.
 - Existing task cache cap64GiB, D free floor128GiB, no builds before admission and no new cache merely to evade limits. Installs/unavailable tools need explicit approval.
 
