@@ -597,3 +597,24 @@ fn http_header_count_and_line_length_limits_are_unchanged() {
         result => panic!("over-limit line remained live: {result:?}"),
     }
 }
+
+/// Reusing the host's relay tuple after a large completed transfer used to
+/// strand Attach on Windows; concurrent guests must have independent races.
+#[test]
+fn repeated_large_relay_transfers_keep_short_code_races_independent() {
+    let (_relay, address) = relay(generous());
+    let host = start(Some(&address), PathMode::Auto);
+    let (_, short) = invite_of(&host, true);
+    let short = short.unwrap().to_string();
+    for _ in 0..2 {
+        let tunnel = join(&short, Some(&address), PathMode::RelayOnly).unwrap();
+        assert!(!tunnel.direct);
+        round_trip(tunnel, &payload(1 << 20));
+        let a = join(&short, Some(&address), PathMode::Auto).unwrap();
+        let b = join(&short, Some(&address), PathMode::Auto).unwrap();
+        assert!(a.direct && b.direct);
+        let worker = std::thread::spawn(move || round_trip(a, b"first guest"));
+        round_trip(b, b"second guest");
+        worker.join().unwrap();
+    }
+}

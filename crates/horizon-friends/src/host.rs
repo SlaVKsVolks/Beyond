@@ -285,19 +285,35 @@ fn share(shared: Arc<Shared>, port: u16) {
 /// Inbound streams on the direct port: a relayed session's direct race, or
 /// a guest with the code.
 fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
-    while !shared.stopped() {
+    route_until(listeners, shared, None);
+}
+
+/// The same admission and absolute opening guard serve both the long-lived
+/// direct port and a relayed session's short-lived rendezvous port.
+fn route_until(
+    listeners: Vec<TcpListener>,
+    shared: Arc<Shared>,
+    race: Option<(u64, Instant, Arc<AtomicBool>)>,
+) {
+    while !shared.stopped()
+        && race
+            .as_ref()
+            .is_none_or(|(_, until, stop)| Instant::now() < *until && !stop.load(Ordering::Relaxed))
+    {
         let mut idle = true;
         for l in &listeners {
             let Ok((s, _)) = l.accept() else { continue };
             idle = false;
-            if shared.handshakes.load(Ordering::Relaxed) >= MAX_HANDSHAKES {
+            if shared.handshakes.fetch_add(1, Ordering::Relaxed) >= MAX_HANDSHAKES {
+                shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                 continue;
             }
-            shared.handshakes.fetch_add(1, Ordering::Relaxed);
-            let shared = shared.clone();
-            let _ = std::thread::Builder::new()
+            let worker = shared.clone();
+            let only_session = race.as_ref().map(|(session, _, _)| *session);
+            let spawned = std::thread::Builder::new()
                 .name("horizon-friends-inbound".into())
                 .spawn(move || {
+                    let shared = worker;
                     let _ = s.set_nonblocking(false);
                     let Ok(mut deadline) = s
                         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -309,6 +325,9 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                     match direct::read_hello_from(&mut deadline) {
                         Ok(direct::Hello::Relayed(session)) => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                            if only_session.is_some_and(|only| only != session) {
+                                return;
+                            }
                             let route = {
                                 let mut routes = shared.routes.lock().unwrap();
                                 routes.retain(|_, (_, until)| *until > Instant::now());
@@ -322,12 +341,17 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                                 let _ = tx.send(s);
                             }
                         }
-                        Ok(direct::Hello::Code(session)) => serve_code(&shared, deadline, session),
-                        Err(_) => {
+                        Ok(direct::Hello::Code(session)) if only_session.is_none() => {
+                            serve_code(&shared, deadline, session)
+                        }
+                        _ => {
                             shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         }
                     }
                 });
+            if spawned.is_err() {
+                shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+            }
         }
         if idle {
             std::thread::sleep(Duration::from_millis(20));
@@ -427,10 +451,8 @@ fn run_relay(shared: Arc<Shared>, relay: String) {
 
 fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
     let config = &shared.config;
-    let port = Some(shared.state.lock().unwrap().port);
-    // The control connection uses any port: the direct port stays free for
-    // the attach connections, whose observed address is the one that counts.
-    let (mut control, relay) = connect_relay(relay_url, None)?;
+    // Control registration does not occupy a session's rendezvous tuple.
+    let (mut control, _) = connect_relay(relay_url, None)?;
     control.set_read_timeout(Some(Duration::from_secs(70)))?;
     wire::send(
         &mut control,
@@ -488,9 +510,7 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
                 let _ = std::thread::Builder::new()
                     .name("horizon-friends-session".into())
                     .spawn(move || {
-                        serve_relayed(
-                            &shared, &relay_url, &code, &token, session, port, relay, &control,
-                        )
+                        serve_relayed(&shared, &relay_url, &code, &token, session, &control)
                     });
             }
             _ => {}
@@ -500,21 +520,23 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
 
 /// One guest through the relay: attach, agree on the key from the short
 /// code, settle on a direct or relayed stream, carry it.
-#[allow(clippy::too_many_arguments)]
 fn serve_relayed(
     shared: &Arc<Shared>,
     relay_url: &str,
     code: &Code,
     token: &str,
     session: u64,
-    port: Option<u16>,
-    relay: SocketAddr,
     control: &TcpStream,
 ) {
     let config = &shared.config;
-    let Ok((mut stream, _)) = connect_relay(relay_url, port) else {
+    // A completed relay transfer can leave its TCP tuple unusable on Windows.
+    // Own a fresh port for this attachment AND its direct simultaneous-open
+    // race, rather than spending the attachment budget on the old tuple.
+    let (listeners, port) = rendezvous(direct::listen(0));
+    let Ok((mut stream, relay)) = connect_relay(relay_url, port) else {
         return;
     };
+    let attachment_port = stream.local_addr().ok().map(|a| a.port());
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let attach = ToRelay::Attach {
         v: wire::VERSION,
@@ -548,8 +570,22 @@ fn serve_relayed(
             return;
         }
     };
-    let candidates = port.map_or_else(Vec::new, |p| direct::candidates(p, Some(relay), observed));
+    let candidates = port.map_or_else(Vec::new, |p| {
+        let global = shared
+            .reach
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(Reach::endpoints)
+            .unwrap_or_default();
+        relay_candidates(
+            direct::candidates(p, Some(relay), None),
+            global,
+            reflected_candidate(observed, port, attachment_port),
+        )
+    });
     let routes = shared.clone();
+    let mut race = InboundRace::default();
     let settled = session::settle(
         relayed,
         &key,
@@ -558,17 +594,83 @@ fn serve_relayed(
         session,
         port,
         candidates,
-        Box::new(move |tx, deadline, _stop| {
+        Box::new(|tx, deadline, stop| {
             routes
                 .routes
                 .lock()
                 .unwrap()
                 .insert(session, (tx, deadline + Duration::from_millis(500)));
+            race.stop = Some(stop.clone());
+            race.worker = std::thread::Builder::new()
+                .name("horizon-friends-rendezvous".into())
+                .spawn(move || route_until(listeners, routes, Some((session, deadline, stop))))
+                .ok();
         }),
     );
+    drop(race);
     shared.routes.lock().unwrap().remove(&session);
     if let Ok(settled) = settled {
         carry(shared, session, settled.secure, settled.direct);
+    }
+}
+
+/// Allocation failure degrades like the guest: relay still works, without
+/// claiming a reflexive address for a port that we cannot listen/race on.
+fn rendezvous(result: io::Result<(Vec<TcpListener>, u16)>) -> (Vec<TcpListener>, Option<u16>) {
+    match result {
+        Ok((listeners, port)) => (listeners, Some(port)),
+        Err(_) => (Vec::new(), None),
+    }
+}
+
+/// A bind fallback may use another port. Its observed mapping cannot describe
+/// our listener, but the listener's interface/global routes are still useful.
+fn reflected_candidate(
+    observed: Option<SocketAddr>,
+    port: Option<u16>,
+    attachment_port: Option<u16>,
+) -> Option<SocketAddr> {
+    observed.filter(|_| port.is_some() && port == attachment_port)
+}
+
+/// Reserve the observed path, best shared (mapped/forwarded) path and fresh
+/// interface path before filling the bounded, deduplicated candidate list.
+fn relay_candidates(
+    local: Vec<SocketAddr>,
+    global: Vec<SocketAddr>,
+    observed: Option<SocketAddr>,
+) -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    for address in observed
+        .into_iter()
+        .chain(global.first().copied())
+        .chain(local.first().copied())
+        .chain(global)
+        .chain(local)
+    {
+        if !address.ip().is_unspecified() && !out.contains(&address) {
+            out.push(address);
+            if out.len() == crate::invite::MAX_ENDPOINTS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[derive(Default)]
+struct InboundRace {
+    stop: Option<Arc<AtomicBool>>,
+    worker: Option<JoinHandle<()>>,
+}
+impl Drop for InboundRace {
+    fn drop(&mut self) {
+        if let Some(stop) = &self.stop {
+            stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -756,5 +858,120 @@ mod opening_tests {
         assert_eq!(peer.read(&mut [0]).unwrap(), 0);
         wait_for(|| shared.handshakes.load(Ordering::Relaxed) == 0);
         assert_eq!(shared.wrong.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn early_closed_global_opening_releases_admission() {
+        let shared = shared("127.0.0.1:9".parse().unwrap());
+        let router = Router::start(shared.clone());
+        let peer = TcpStream::connect(router.address).unwrap();
+        peer.shutdown(Shutdown::Both).unwrap();
+        drop(peer);
+        let mut peer = TcpStream::connect(router.address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.write_all(b"bad hello!!!").unwrap();
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        wait_for(|| shared.handshakes.load(Ordering::Relaxed) == 0);
+    }
+
+    #[test]
+    fn relayed_candidates_keep_observed_forwarded_and_fresh_paths_at_capacity() {
+        let observed = "203.0.113.8:40000".parse().unwrap();
+        let forwarded = "203.0.113.8:25580".parse().unwrap();
+        let fresh = "192.168.1.2:40000".parse().unwrap();
+        let mut global = vec![forwarded, forwarded];
+        global.extend((1..=8).map(|n| SocketAddr::from(([10, 0, 0, n], 25580))));
+        let candidates = relay_candidates(vec![fresh, observed], global, Some(observed));
+        assert_eq!(&candidates[..3], &[observed, forwarded, fresh]);
+        assert_eq!(candidates.len(), crate::invite::MAX_ENDPOINTS);
+        assert_eq!(candidates.iter().filter(|&&a| a == observed).count(), 1);
+        assert_eq!(candidates.iter().filter(|&&a| a == forwarded).count(), 1);
+    }
+
+    #[test]
+    fn missing_rendezvous_listener_keeps_relay_only_capability() {
+        let (listeners, port) = rendezvous(Err(io::ErrorKind::AddrNotAvailable.into()));
+        assert!(listeners.is_empty());
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn mismatched_attachment_omits_only_the_false_reflexive_candidate() {
+        let observed = "203.0.113.8:40000".parse().unwrap();
+        let forwarded = "203.0.113.8:25580".parse().unwrap();
+        let fresh = "192.168.1.2:40000".parse().unwrap();
+        let selected = reflected_candidate(Some(observed), Some(40000), Some(40001));
+        assert_eq!(
+            relay_candidates(vec![fresh], vec![forwarded], selected),
+            vec![forwarded, fresh]
+        );
+        assert_eq!(
+            reflected_candidate(Some(observed), Some(40000), Some(40000)),
+            Some(observed)
+        );
+        assert_eq!(reflected_candidate(Some(observed), None, Some(40001)), None);
+    }
+
+    /// The new port must use the SAME global route/admission machinery,
+    /// reject other sessions and release its listener when its owner drops.
+    #[test]
+    fn fresh_and_global_listeners_share_routes_and_admission() {
+        let shared = shared("127.0.0.1:9".parse().unwrap());
+        let router = Router::start(shared.clone());
+        let (listeners, port) = direct::listen(0).unwrap();
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = shared.clone();
+        let flag = stop.clone();
+        let race = InboundRace {
+            stop: Some(stop),
+            worker: Some(std::thread::spawn(move || {
+                route_until(
+                    listeners,
+                    worker,
+                    Some((71, Instant::now() + direct::RACE, flag)),
+                );
+            })),
+        };
+        let (tx, rx) = channel();
+        shared
+            .routes
+            .lock()
+            .unwrap()
+            .insert(71, (tx, Instant::now() + direct::RACE));
+
+        // Already occupied admission slots reject fresh AND shared traffic.
+        shared.handshakes.store(MAX_HANDSHAKES, Ordering::Relaxed);
+        for to in [address, router.address] {
+            let mut peer = TcpStream::connect(to).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
+        assert_eq!(shared.handshakes.load(Ordering::Relaxed), MAX_HANDSHAKES);
+        shared.handshakes.store(0, Ordering::Relaxed);
+        for to in [address, router.address] {
+            let mut peer = TcpStream::connect(to).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            peer.set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            direct::answer(&mut peer, 71).unwrap();
+            let mut hello = [0; 12];
+            peer.read_exact(&mut hello).unwrap();
+            let mut routed = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            peer.write_all(b"handoff").unwrap();
+            let mut data = [0; 7];
+            routed.read_exact(&mut data).unwrap();
+            assert_eq!(&data, b"handoff");
+        }
+        let mut wrong = TcpStream::connect(address).unwrap();
+        wrong
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        direct::answer(&mut wrong, 72).unwrap();
+        assert_eq!(wrong.read(&mut [0]).unwrap(), 0);
+        wait_for(|| shared.handshakes.load(Ordering::Relaxed) == 0);
+        // Drop joins the finite accept loop, including an error-path stop.
+        drop(race);
+        assert!(TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err());
     }
 }
