@@ -15,6 +15,14 @@ It only grows: the last line is the current version, and a change to the output 
         not what the last line says, or when the file changed other than by appending since SHA. --cache keeps
         the digest beside RESOURCES (CI: a preparation never changes once made; it takes ~30 s to compute)
 
+The strict digest/check below remains unchanged. A complete Windows preparation can
+add validated optional launcher assets and encode two source/data hashes with CRLF.
+Use --validated-reference with explicit --reference-source, --reference-client,
+--reference-index and --reference-version to verify those inputs and every manifest
+hash before projecting the historical JAR-only core identity. Both the full raw and
+validated core digests are reported; no files or expected versions change. This mode
+never reads/writes a digest cache. Invalid, incomplete or unpinned inputs fail closed.
+
 The digest covers every file of the preparation, canonicalised where the preparer is not deterministic between
 runs (verified across the CI runners): JSON is compared as data (key order, the order of each `tags` list of
 creative-inventory.json, and the addresses in `$$Lambda/0x...` class names don't count); logs, compiled classes,
@@ -31,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,6 +103,12 @@ def digest(resources: Path) -> tuple[str, int]:
     return total.hexdigest(), len(files)
 
 
+def reference_digest(resources: Path, source_root: Path, client_jar: Path,
+                     asset_index: Path, version_manifest: Path, lock_path: Path) -> dict[str, object]:
+    from tools.prepare_output_profile import validated_digest
+    return validated_digest(resources, source_root, client_jar, asset_index, version_manifest, lock_path)
+
+
 def parse_versions(text: str) -> list[tuple[int, str]]:
     out = []
     for line in text.splitlines():
@@ -129,11 +144,34 @@ def main() -> int:
     parser.add_argument('resources', nargs='?', type=Path)
     parser.add_argument('--base', help='the commit the change is based on (check: the file only grew since)')
     parser.add_argument('--cache', action='store_true', help='keep the digest beside the preparation')
+    parser.add_argument('--validated-reference', action='store_true',
+                        help='verify pinned inputs and optional assets before comparing the JAR-only core profile')
+    parser.add_argument('--reference-source', type=Path)
+    parser.add_argument('--reference-client', type=Path)
+    parser.add_argument('--reference-index', type=Path)
+    parser.add_argument('--reference-version', type=Path)
     args = parser.parse_args()
-    resources = (args.resources or default_resources()).resolve()
+    references = (args.reference_source, args.reference_client, args.reference_index, args.reference_version)
+    if args.validated_reference:
+        if args.cache or not all(references):
+            parser.error('validated reference requires all four explicit references and forbids --cache')
+    elif any(references):
+        parser.error('reference inputs require --validated-reference; strict mode is unchanged')
+    selected = args.resources or default_resources()
+    resources = selected.absolute() if args.validated_reference else selected.resolve()
     tool = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
     cache = resources.parent / f'.output-digest-{resources.name}-{tool}'
-    if args.cache and cache.is_file():
+    if args.validated_reference:
+        # Direct script invocation normally has tools/, not the repository root,
+        # on sys.path. This loads our own first-party sibling package only.
+        sys.path.insert(0, str(ROOT))
+        try:
+            profile = reference_digest(resources, *references, ROOT / 'research-lock.json')
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            parser.error(f'validated reference failed: {error}')
+        value, count = profile['core_digest'], profile['core_files']
+        print('validated reference: ' + json.dumps(profile, sort_keys=True))
+    elif args.cache and cache.is_file():
         value, count = cache.read_text().split()
     else:
         value, count = digest(resources)

@@ -805,3 +805,59 @@ Full local logs, native RED, failed attempts, contracts, archive comparisons,
 independent-review bindings and the storage proposal remain in the existing local
 combined-acceptance evidence directory. Source-ready and focused passes are not
 main-ready. No release, deployment or main promotion is authorized by this record.
+
+
+## Completed Windows readiness and validated resource profile — 2026-10-29
+
+These later results supersede the pending local/hosted observations above, not
+any recorded failed attempt. They do not authorize a main merge or establish
+universal dependency safety.
+
+- On the reviewed `f9193846` Rust inputs, the complete unmodified
+  `python tools/pr_ready.py --base origin/main --verbose` completed with native
+  resource/ownership/source/teardown guards: **2392 Rust passes, 0 failures and
+  41 inherited ignores** across workspace, doc, token and launcher groups.
+  Formatting, strict Clippy, unsafe-coverage audit, public-tree and lock checks
+  passed. Its Python result was **420 run, 409 executed passes, 11 skips**, not
+  420 executed passes. The same candidate's required hosted verification passed.
+- The preceding Windows client access violation was not reproduced under a
+  scoped debugger or in this unmodified readiness run. This is not a diagnosed
+  driver fix. Native junction-accounting acceptance and completed owned process
+  lifecycles are separate from game/parity acceptance.
+- Subsequent Python-only checker changes passed the full Windows suite:
+  **436 run, 425 executed passes, 11 inherited skips, 0 failures**. No Rust,
+  manifest, lockfile, native preparer output or unsafe boundary changed. The
+  successful suite lifecycle used the already-qualified exact-owned compiler
+  helper retirement; it is not described as natural drainage.
+
+`tools/prepare_output.py` retains its original **strict default** digest/check,
+canonicalization, expected fingerprint, `OUTPUT_VERSION` and append-only version
+history checks. Its new explicit `--validated-reference` mode requires all four
+reference inputs (`--reference-source`, `--reference-client`, `--reference-index`,
+`--reference-version`) and the trusted project lock. It rejects digest caching.
+
+The opt-in mode first verifies complete schema-7 source/resource raw hashes,
+pinned metadata/JAR/index identities, the native importer's optional-asset policy
+and complete claimed families against index sizes and hashes. Only then does it
+project the historical JAR-only comparison in memory, retaining the complete
+actual assets and reporting both raw and core identities. Only two demonstrated
+CRLF-sensitive scalar identities are derived from verified text bytes. Every
+resource read is tied to its initial raw hash; full resource-name/hash and
+reference/source/policy/tool readbacks precede acceptance. This is a bounded
+stable-before/after observation contract, not universal atomic-filesystem or
+hostile-ABA proof.
+
+The actual complete Windows preparation passed that gate: **23205 raw canonical
+files**, **23055 validated core files matching the unchanged version-1 baseline**,
+**157 verified optional payloads**, **23 source and 13 resource hash entries**.
+The index is separate from the payload count. No asset was removed or replaced,
+no expected version/hash was changed, and no digest cache or private game file
+was published. Original strict-mode mismatch evidence remains distinct.
+
+**Still open:** the **340 affected vanilla parity harnesses were listed, not
+executed**. Native Windows runner slot, peak-memory, child-lifecycle, oracle-shim
+and compatible one-root build-admission paths still need preserving validation.
+Resource availability and the checks above do not replace that gate. The current
+Windows-only product milestone and deferred Linux support remain unchanged;
+existing mandatory hosted checks are retained. Main remains held, and neither
+full Rust-rule acceptance nor whole-game/runtime acceptance is claimed.
