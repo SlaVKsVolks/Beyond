@@ -3,14 +3,21 @@ name = "horizon-threads"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.85"
+rust-version = "1.99.1"
 description = "Scheduling hints for the game's threads with native platform priorities"
 
-[target.'cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))'.dependencies]
-libc = "0.2"
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix = { version = "=1.1.5", default-features = false, features = ["process", "std"] }
+thread-priority = "=3.1.1"
 
 [target.'cfg(windows)'.dependencies]
 thread-priority = "=3.1.1"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

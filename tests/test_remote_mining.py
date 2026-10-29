@@ -21,6 +21,7 @@ class RemoteMiningTests(unittest.TestCase):
         start = source.index("    fn remote_mining(")
         end = source.index("    /// MultiPlayerGameMode.destroyBlock", start)
         fixture = r'''
+#![forbid(unsafe_code)]
 #![allow(dead_code)]
 #[derive(Clone, Copy)]
 struct Hit { pos: [i32; 3], face: u8 }
@@ -143,7 +144,7 @@ fn main() {
         with tempfile.TemporaryDirectory(prefix="remote-mining-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)
-            subprocess.run(["rustc", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
+            subprocess.run(["rustc", "-Funsafe_code", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
                            check=True, capture_output=True, text=True)
             result = subprocess.run([str(path / "probe")], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

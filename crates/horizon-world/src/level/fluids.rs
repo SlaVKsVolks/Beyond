@@ -155,22 +155,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         let cacheable = source_index >= 0 && target_index >= 0;
         let key = (source_index, target_index, direction as u8);
-        if cacheable {
-            if let Some(result) = self
+        if cacheable
+            && let Some(result) = self
                 .b
                 .occlusion_cache
                 .lock()
                 .ok()
                 .and_then(|cache| cache.get(&key).copied())
-            {
-                return result;
-            }
+        {
+            return result;
         }
         let result = !merged_face_occludes(&source_shape, &target_shape, direction);
-        if cacheable {
-            if let Ok(mut cache) = self.b.occlusion_cache.lock() {
-                cache.insert(key, result);
-            }
+        if cacheable && let Ok(mut cache) = self.b.occlusion_cache.lock() {
+            cache.insert(key, result);
         }
         result
     }

@@ -22,3 +22,8 @@ pub fn live_bytes() -> usize {
         0
     }
 }
+
+/// Difference used by the model benchmark's retained-byte fields.
+pub fn retained_delta(current: usize, initial: usize) -> i128 {
+    current as i128 - initial as i128
+}

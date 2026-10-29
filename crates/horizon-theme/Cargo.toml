@@ -3,6 +3,10 @@ name = "horizon-theme"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.99.1"
 description = "Horizon's design tokens, fonts and icons, shared by the launcher, the website and the game's menus"
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [dependencies]

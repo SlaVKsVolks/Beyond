@@ -3,7 +3,11 @@ name = "horizon-bench"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.99.1"
 description = "The benchmark report format (docs/benchmark-report.md), shared by the game, the launcher and the upload"
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

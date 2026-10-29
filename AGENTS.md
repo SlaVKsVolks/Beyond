@@ -1,4 +1,12 @@
-# Horizon: a map for agents
+# Beyond: a map for agents
+
+## Fork authority and identity
+
+This repository is **Beyond**, the owner's fork of Horizon, at `SlaVKsVolks/Beyond`. The owner's current requirements and custom Rust rules take precedence over upstream implementation choices. Beyond is not required to keep the same implementation as upstream. Preserve upstream licenses, attribution and historical evidence.
+
+The 2026-10-28 rename covers the GitHub repository identity, local origin URL and maintained fork documentation. Internal Cargo/crate/binary names, data/configuration paths, protocol identifiers and release/service configuration have not been migrated yet. Do not claim that migration or full Rust compliance is complete, and do not blindly replace compatibility identifiers. The owner's later explicit decisions authorize removal of macOS-specific code and defer Linux support. All other original capabilities, including memory diagnostics, must remain available even if redesigned or improved to fit the custom Rust rules. Do not delete diagnostics, silently change a measurement, or hide unsafe behind comments/features merely to make a check pass. See [fork status](docs/beyond-fork.md) and [Rust assurance](docs/rust-assurance.md).
+
+## Upstream map and behavior baseline
 
 Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specification wherever it has the
 feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
@@ -16,6 +24,12 @@ platform badges, download instructions, and Linux/macOS references are not our s
 Preserve existing platform code, workflows, and mandatory checks. This scope record does not authorize
 removing them, changing build/CI configuration, or starting deployment or release work. Evaluate shared
 changes for their in-scope relevance rather than rejecting them merely because they also affect macOS.
+
+The later October 28 authorized Apple-native removal supersedes the earlier preserve-platform-code restriction only for the exact reviewed Mac removal; Windows fixes and deferred Linux capabilities remain protected.
+
+## Rust assurance
+
+Before Rust changes, record the change contract, invariants and observable checks; obtain independent review for safety, public-contract, concurrency and resource-lifecycle changes. See [docs/rust-assurance.md](docs/rust-assurance.md) for current boundaries and verification limits. Run `python3 tools/check_rust_safety.py` as a scoped guard; a guard pass does not establish full unsafe prohibition or dependency safety.
 
 ## Rules that bite
 

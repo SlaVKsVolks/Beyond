@@ -128,27 +128,28 @@ impl Stage<'_> {
             // `T x[] = T[](a, b)`: naga gives unsized arrays no size, so the count is written in.
             if t == "["
                 && let Some(close) = next(i).filter(|&j| self.tokens[j] == "]")
+                && let Some(n) = self.array_length(close)
             {
-                if let Some(n) = self.array_length(close) {
-                    write!(out, "[{n}]").unwrap();
-                    skip_until = close + 1;
-                    continue;
-                }
+                write!(out, "[{n}]").unwrap();
+                skip_until = close + 1;
+                continue;
             }
             if !is_ident(t) {
                 out.push_str(t);
                 continue;
             }
             // A function definition's sampler parameters: `sampler2D s` → `texture2D s, sampler hz_s_s`.
-            if depth == 0 && t.contains("sampler") && calls.len() == 1 {
-                if let Some(n) = next(i).filter(|&n| is_ident(self.tokens[n])) {
-                    let name = self.tokens[n];
-                    let (texture, sampler) = split_sampler(t);
-                    write!(out, "{texture} {name}, {sampler} hz_s_{name}").unwrap();
-                    params.insert(name.to_owned(), t.to_owned());
-                    skip_until = n + 1;
-                    continue;
-                }
+            if depth == 0
+                && t.contains("sampler")
+                && calls.len() == 1
+                && let Some(n) = next(i).filter(|&n| is_ident(self.tokens[n]))
+            {
+                let name = self.tokens[n];
+                let (texture, sampler) = split_sampler(t);
+                write!(out, "{texture} {name}, {sampler} hz_s_{name}").unwrap();
+                params.insert(name.to_owned(), t.to_owned());
+                skip_until = n + 1;
+                continue;
             }
             // `float specular`: a variable of the same name as a sampler, from here to the
             // function's end; `.specular` a member.

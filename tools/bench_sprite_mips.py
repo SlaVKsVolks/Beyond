@@ -56,12 +56,14 @@ def main():
         code += '\n' + source[source.index('#[cfg(test)]\nmod sprite_upload_tests'):]
     modules = '\n'.join(f'#[path = {json.dumps(str(ROOT / "crates/horizon-client/src" / (name + ".rs")))}] mod {name};'
                         for name in ('mipmap', 'sprites', 'fast_hash'))
-    (build / 'main.rs').write_text(modules + '\nuse sprites::SpriteAnimation;\n'
+    (build / 'main.rs').write_text('#![forbid(unsafe_code)]\n' + modules + '\nuse sprites::SpriteAnimation;\n'
                                   + code + '\n' + (ROOT / 'tools/bench_sprite_mips.rs').read_text())
     (build / 'Cargo.toml').write_text(f'''[package]
 name = "sprite-mips-{args.label}"
 version = "0.0.0"
 edition = "2024"
+[lints.rust]
+unsafe_code = "forbid"
 [workspace]
 [[bin]]
 name = "sprite-mips-{args.label}"

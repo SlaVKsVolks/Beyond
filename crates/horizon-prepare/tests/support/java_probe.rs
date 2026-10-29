@@ -1,4 +1,6 @@
 //! A fake Java tool for process-level JDK selection tests; no installed Java is needed.
+#![forbid(unsafe_code)]
+
 use std::{env, fs, process};
 
 fn main() {

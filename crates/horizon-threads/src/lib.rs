@@ -1,7 +1,7 @@
 #![cfg_attr(windows, forbid(unsafe_code))]
 
-//! Scheduling hints for the game's threads. Windows uses a safe native API;
-//! the other supported platforms retain their platform-specific OS calls.
+//! Scheduling hints for the game's threads. Windows, Linux and Android use
+//! published safe priority APIs, whose native internals remain dependencies.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,8 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// (`Thread.setPriority(8)` when there are more than four processors), so
 /// world generation and chunk encoding on every other core don't hold a tick
 /// back (the client asks the same for its render thread, so they don't hold
-/// a frame back either): user-interactive quality of service on macOS,
-/// above-normal priority on Windows. Nothing elsewhere: Linux lets an
+/// a frame back either): above-normal priority on Windows. Nothing elsewhere: Linux lets an
 /// unprivileged thread lower its priority but not raise it (and the JVM
 /// leaves it there too). Whether the OS took it.
 #[cfg(not(windows))]
@@ -37,14 +36,6 @@ fn favour_with_parallelism(parallelism: std::io::Result<std::num::NonZeroUsize>)
     favour()
 }
 
-#[cfg(target_vendor = "apple")]
-fn favour() -> bool {
-    // SAFETY: sets the calling thread's own QoS class; no pointers.
-    unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) == 0
-    }
-}
-
 #[cfg(windows)]
 fn favour() -> bool {
     set_windows_priority(thread_priority::WinAPIThreadPriority::AboveNormal)
@@ -56,7 +47,7 @@ fn set_windows_priority(priority: thread_priority::WinAPIThreadPriority) -> bool
         .is_ok()
 }
 
-#[cfg(not(any(target_vendor = "apple", windows)))]
+#[cfg(not(windows))]
 fn favour() -> bool {
     false
 }
@@ -91,18 +82,56 @@ pub fn behind_server() -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn behind() -> bool {
-    // SAFETY: these read and set the calling thread's own nice value or
-    // policy (who 0, pid 0 is the calling thread on Linux and Android); `param` lives
-    // across the call.
-    unsafe {
-        let nice = libc::getpriority(libc::PRIO_PROCESS as _, 0);
-        if nice + BEHIND <= 19 {
-            libc::setpriority(libc::PRIO_PROCESS as _, 0, nice + BEHIND) == 0
-        } else {
-            let param = libc::sched_param { sched_priority: 0 };
-            libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0
-        }
+    let Ok(nice) = rustix::process::getpriority_process(None) else {
+        return false;
+    };
+    if nice + BEHIND <= 19 {
+        rustix::process::setpriority_process(None, nice + BEHIND).is_ok()
+    } else {
+        set_idle(nice)
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn idle_priority(nice: i32) -> Option<thread_priority::ThreadPriority> {
+    use thread_priority::{
+        NormalThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
+    };
+    let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle);
+    (0..=100)
+        .filter_map(|value| ThreadPriorityValue::try_from(value).ok())
+        .map(ThreadPriority::Crossplatform)
+        .find(|priority| priority.to_posix(policy) == Ok(nice))
+}
+
+// A false result can mean the OS changed the policy but a later operation or
+// readback failed; the safe API is a best-effort hint, not an atomic transaction.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn idle_result(result: Result<(), thread_priority::Error>, nice: i32) -> bool {
+    use thread_priority::{NormalThreadSchedulePolicy, ThreadSchedulePolicy};
+    result.is_ok()
+        && thread_priority::thread_schedule_policy()
+            == Ok(ThreadSchedulePolicy::Normal(
+                NormalThreadSchedulePolicy::Idle,
+            ))
+        && rustix::process::getpriority_process(None) == Ok(nice)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn set_idle(nice: i32) -> bool {
+    use thread_priority::{NormalThreadSchedulePolicy, ThreadSchedulePolicy};
+    let Some(priority) = idle_priority(nice) else {
+        return false;
+    };
+    let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle);
+    idle_result(
+        thread_priority::set_thread_priority_and_policy(
+            thread_priority::thread_native_id(),
+            priority,
+            policy,
+        ),
+        nice,
+    )
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -112,24 +141,14 @@ fn behind() -> bool {
 
 /// Run the calling thread only on a core nothing else wants: work that may
 /// take seconds and that nothing waits for yet (the stronghold rings while a
-/// world opens). The idle class on Linux, background quality of service on
-/// macOS, idle priority on Windows. Whether the OS took it.
+/// world opens). The idle class on Linux, idle priority on Windows. Whether the OS took it.
 pub fn idle_current() -> bool {
     idle()
 }
 
 #[cfg(target_os = "linux")]
 fn idle() -> bool {
-    let param = libc::sched_param { sched_priority: 0 };
-    // SAFETY: sets the calling thread's own policy (pid 0); `param` lives
-    // across the call.
-    unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0 }
-}
-
-#[cfg(target_vendor = "apple")]
-fn idle() -> bool {
-    // SAFETY: sets the calling thread's own QoS class; no pointers.
-    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0) == 0 }
+    rustix::process::getpriority_process(None).is_ok_and(set_idle)
 }
 
 #[cfg(windows)]
@@ -137,35 +156,43 @@ fn idle() -> bool {
     set_windows_priority(thread_priority::WinAPIThreadPriority::Idle)
 }
 
-#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn idle() -> bool {
     false
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn idle_selection_preserves_each_nice_and_rejects_out_of_range() {
+        use thread_priority::{NormalThreadSchedulePolicy, ThreadSchedulePolicy};
+        let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle);
+        for nice in -20..=19 {
+            assert_eq!(
+                super::idle_priority(nice)
+                    .unwrap()
+                    .to_posix(policy)
+                    .unwrap(),
+                nice
+            );
+        }
+        assert!(super::idle_priority(-21).is_none());
+        assert!(super::idle_priority(20).is_none());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn failed_idle_setter_is_reported_as_false() {
+        let error = thread_priority::Error::Priority("injected setter failure");
+        assert!(!super::idle_result(Err(error), 0));
+    }
+
     /// The hint holds on the platforms that take it.
     #[test]
     fn favouring_a_thread_takes_where_the_os_allows_it() {
         let took = std::thread::spawn(super::favour).join().unwrap();
-        assert_eq!(took, cfg!(any(target_vendor = "apple", windows)));
-        #[cfg(target_vendor = "apple")]
-        std::thread::spawn(|| {
-            assert!(super::favour());
-            let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
-            let mut relative = 0;
-            // SAFETY: reads the calling thread's own QoS class into locals.
-            let read = unsafe {
-                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative)
-            };
-            assert_eq!(read, 0);
-            assert!(matches!(
-                class,
-                libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE
-            ));
-        })
-        .join()
-        .unwrap();
+        assert_eq!(took, cfg!(windows));
     }
 
     /// A helper goes behind only once a dedicated server asks for it, and
@@ -176,20 +203,19 @@ mod tests {
         super::put_helpers_behind();
         #[cfg(any(target_os = "linux", target_os = "android"))]
         std::thread::spawn(|| {
-            // SAFETY: reads the calling thread's own nice value.
-            let before = unsafe { libc::getpriority(libc::PRIO_PROCESS as _, 0) };
+            let before = rustix::process::getpriority_process(None).unwrap();
             assert!(super::behind_server());
-            // SAFETY: reads the calling thread's own nice value and policy.
-            let (after, policy) = unsafe {
-                (
-                    libc::getpriority(libc::PRIO_PROCESS as _, 0),
-                    libc::sched_getscheduler(0),
-                )
-            };
+            let after = rustix::process::getpriority_process(None).unwrap();
+            let policy = thread_priority::thread_schedule_policy().unwrap();
             if before + super::BEHIND <= 19 {
                 assert_eq!(after, before + super::BEHIND);
             } else {
-                assert_eq!(policy, libc::SCHED_IDLE);
+                assert_eq!(
+                    policy,
+                    thread_priority::ThreadSchedulePolicy::Normal(
+                        thread_priority::NormalThreadSchedulePolicy::Idle
+                    )
+                );
             }
         })
         .join()
@@ -198,19 +224,20 @@ mod tests {
         assert!(!std::thread::spawn(super::behind_server).join().unwrap());
     }
 
-    /// The idle hint holds on the three platforms.
+    /// The idle hint holds on the supported platforms.
     #[test]
     fn idling_a_thread_takes() {
         let took = std::thread::spawn(super::idle_current).join().unwrap();
-        assert_eq!(
-            took,
-            cfg!(any(target_os = "linux", target_vendor = "apple", windows))
-        );
+        assert_eq!(took, cfg!(any(target_os = "linux", windows)));
         #[cfg(target_os = "linux")]
         std::thread::spawn(|| {
             assert!(super::idle_current());
-            // SAFETY: reads the calling thread's own policy.
-            assert_eq!(unsafe { libc::sched_getscheduler(0) }, libc::SCHED_IDLE);
+            assert_eq!(
+                thread_priority::thread_schedule_policy().unwrap(),
+                thread_priority::ThreadSchedulePolicy::Normal(
+                    thread_priority::NormalThreadSchedulePolicy::Idle
+                )
+            );
         })
         .join()
         .unwrap();

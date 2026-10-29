@@ -4,7 +4,7 @@ default-run = "horizon-client"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version = "1.99.1"
 description = "Horizon native development client"
 
 [dependencies]
@@ -97,10 +97,17 @@ rng-trace = ["horizon-core/rng-trace"]
 name = "client_probe"
 path = "examples/probe/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
 
 [dev-dependencies]
+mod-alloc = { path = "../../third_party/mod-alloc", features = ["exact-counters"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
 # Compile-time optional metrics for model_library_bench and its safe process fixtures.

@@ -674,10 +674,10 @@ fn main() {
     });
     if o.report.as_deref() == Some("-") {
         println!("{summary:#}");
-    } else if let Some(path) = &o.report {
-        if let Err(e) = std::fs::write(path, format!("{summary:#}\n")) {
-            eprintln!("horizon-bots: {path}: {e}");
-        }
+    } else if let Some(path) = &o.report
+        && let Err(e) = std::fs::write(path, format!("{summary:#}\n"))
+    {
+        eprintln!("horizon-bots: {path}: {e}");
     }
     let errors: Vec<String> = bots
         .iter()

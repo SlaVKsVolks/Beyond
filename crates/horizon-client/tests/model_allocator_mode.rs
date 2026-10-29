@@ -64,10 +64,52 @@ fn main() {
     );
     let retained_data = vec![5u8; 41];
     expect_delta(initial, retained_data.capacity(), 1);
-    let retained = model_bench_allocator::live_bytes() - initial_live;
+    let retained =
+        model_bench_allocator::retained_delta(model_bench_allocator::live_bytes(), initial_live);
     let block_retained = retained;
+    assert_eq!(retained, if TRACK { 41 } else { 0 });
     black_box(&retained_data);
+    let before_drop = model_bench_allocator::live_bytes();
     drop(retained_data);
+    assert_eq!(
+        model_bench_allocator::retained_delta(model_bench_allocator::live_bytes(), before_drop),
+        if TRACK { -41 } else { 0 }
+    );
+    let deltas: [(usize, usize, i128); 5] = [
+        (0, 0, 0),
+        (41, 0, 41),
+        (0, 41, -41),
+        (usize::MAX, usize::MAX, 0),
+        (usize::MAX - 1, usize::MAX, -1),
+    ];
+    for (current, initial, expected) in deltas {
+        assert_eq!(
+            model_bench_allocator::retained_delta(current, initial),
+            expected
+        );
+    }
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(
+            model_bench_allocator::retained_delta(usize::MAX, 0),
+            18_446_744_073_709_551_615i128
+        );
+        assert_eq!(
+            model_bench_allocator::retained_delta(0, usize::MAX),
+            -18_446_744_073_709_551_615i128
+        );
+    }
+    #[cfg(target_pointer_width = "32")]
+    {
+        assert_eq!(
+            model_bench_allocator::retained_delta(usize::MAX, 0),
+            4_294_967_295i128
+        );
+        assert_eq!(
+            model_bench_allocator::retained_delta(0, usize::MAX),
+            -4_294_967_295i128
+        );
+    }
     assert_eq!(global_metrics(), initial);
     assert_eq!(model_bench_allocator::live_bytes(), initial_live);
     // Thread/Arc/slot initialization and TLS setup precede the measurement.

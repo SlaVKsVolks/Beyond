@@ -142,6 +142,8 @@ jobs:
           # parity jobs, and nothing they leave may end up in a launcher release (target/ is rebuilt from scratch).
           clean: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:

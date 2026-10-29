@@ -1134,8 +1134,8 @@ mod tests {
             let y = i >> 8;
             let r = rng(&mut state);
             terrain.push(match y {
-                0..=8 if r % 40 == 0 => 2000 + (r >> 8) as u32 % 6,
-                0..=8 if r % 13 == 0 => 0,
+                0..=8 if r.is_multiple_of(40) => 2000 + (r >> 8) as u32 % 6,
+                0..=8 if r.is_multiple_of(13) => 0,
                 0..=8 => 1,
                 9..=10 => 10,
                 11 => 9,

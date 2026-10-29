@@ -3,9 +3,13 @@ name = "horizon-launcher"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.99.1"
 description = "Downloads, prepares and starts Horizon builds"
 
 [workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [dependencies]
 gpui = "0.2.2"
@@ -50,18 +54,14 @@ oo7 = { version = "0.5", default-features = false, features = ["async-std", "nat
 futures-lite = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
-# Painting the window's title bar dark or light (titlebar::apply_appearance): crates already in
-# the lockfile through gpui and wgpu.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppearance", "NSView", "NSWindow"] }
-raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Published safe Windows console API; it uses native unsafe internally.
 win32console = "=0.1.5"
 
 [target.'cfg(windows)'.dev-dependencies]
-# Populate the exact dependency sources used by the independently locked console fixture.
+# Exact reviewed safe console fixture and bounded owned Cargo process trees.
 winconsole = { version = "=0.11.1", features = ["window"] }
-# Test-only owned compiler process trees, authoritative idle readback and Cargo-compatible locks.
 win-custody = "=0.1.1"
 win32job = "=2.0.3"
 fs2 = "=0.4.3"

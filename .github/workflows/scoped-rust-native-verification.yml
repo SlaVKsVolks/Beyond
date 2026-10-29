@@ -1,0 +1,86 @@
+name: scoped-rust-native-verification
+
+# First launch is a deliberate push to this exact repair branch. Dispatching a
+# new workflow absent from default is not used as a bootstrap or main exception.
+on:
+  push:
+    branches: [repair/rust-integration-2026-10-27]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scoped-rust-native-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.local/scoped-native-target
+  HORIZON_TELEMETRY_URL: 'off'
+  HORIZON_NO_AUDIO: '1'
+  HORIZON_NO_DISCORD: '1'
+  HORIZON_NO_UPDATE_CHECK: '1'
+  HORIZON_LAUNCHER_NO_SELF_UPDATE: '1'
+  RUSTUP_TOOLCHAIN: '1.99.1'
+
+jobs:
+  linux-native:
+    if: github.repository == 'SlaVKsVolks/Beyond' && github.ref == 'refs/heads/repair/rust-integration-2026-10-27'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Read only the reviewed repair revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Isolated homes and pinned compiler
+        id: toolchain
+        env:
+          HORIZON_HOME: ${{ runner.temp }}/scoped-native/game
+          HORIZON_LAUNCHER_HOME: ${{ runner.temp }}/scoped-native/launcher
+          XDG_DATA_HOME: ${{ runner.temp }}/scoped-native/data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/scoped-native/config
+        run: |
+          set -euo pipefail
+          mkdir -p "$HORIZON_HOME" "$HORIZON_LAUNCHER_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
+          printf '%s\n' "HORIZON_HOME=$HORIZON_HOME" "HORIZON_LAUNCHER_HOME=$HORIZON_LAUNCHER_HOME" "XDG_DATA_HOME=$XDG_DATA_HOME" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" >> "$GITHUB_ENV"
+          rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+          git rev-parse HEAD
+          rustc --version
+          cargo --version
+          sha256sum Cargo.lock third_party/mod-alloc/Cargo.lock
+          df -h . "$RUNNER_TEMP"
+      - name: Audit the registered fork including inactive upstream source
+        id: audit
+        run: |
+          set -euo pipefail
+          python3 -c 'from pathlib import Path; from tools.mod_alloc_integrity import audit_mod_alloc; issues = audit_mod_alloc(Path.cwd()); print(issues); assert not issues'
+          python3 -m unittest tests.test_mod_alloc_integrity -v
+          cargo fmt --manifest-path third_party/mod-alloc/Cargo.toml -- --check
+      - name: Fetch only locked fork dependencies
+        run: cargo fetch --locked --manifest-path third_party/mod-alloc/Cargo.toml
+      - name: Exact real-null and System lifecycle tests
+        id: exact
+        run: |
+          set -euo pipefail
+          cargo test --offline --locked --manifest-path third_party/mod-alloc/Cargo.toml --features exact-counters --lib --test exact_native -- --test-threads=1
+          cargo clippy --offline --locked --manifest-path third_party/mod-alloc/Cargo.toml --features exact-counters --lib --tests --example exact_startup -- -D warnings
+          cargo test --offline --locked --manifest-path third_party/mod-alloc/Cargo.toml --features exact-counters --doc
+      - name: Build the actual Unix signal fixture with locked dependencies
+        id: unix-build
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.audit.outcome == 'success' }}
+        run: cargo test --locked -p horizon-server --test unix_signals --no-run
+      - name: Execute native Unix signal registration, delivery and restoration
+        if: ${{ !cancelled() && steps.unix-build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo test --offline --locked -p horizon-server --test unix_signals
+          cargo test --offline --locked -p horizon-server --bin horizon-server
+          cargo clippy --offline --locked -p horizon-server --all-targets -- -D warnings -F unsafe_code
+          git diff --exit-code -- Cargo.lock third_party/mod-alloc/Cargo.lock
+          df -h . "$RUNNER_TEMP"
+      - name: Observe actual pre-main allocator traffic without fabricating a constructor
+        if: ${{ !cancelled() && steps.exact.outcome == 'success' }}
+        run: cargo run --offline --locked --manifest-path third_party/mod-alloc/Cargo.toml --features exact-counters --example exact_startup

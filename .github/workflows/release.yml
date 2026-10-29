@@ -94,6 +94,8 @@ jobs:
           persist-credentials: false
           clean: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
       - run: bash tools/ci/runner-env.sh
       - run: bash tools/ci/vanilla-data.sh
       - name: Compile and validate original exporters against the pinned jars
@@ -169,6 +171,8 @@ jobs:
           # keeps its preparations outside the checkout.
           clean: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:

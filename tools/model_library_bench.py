@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("baseline", type=Path)
     parser.add_argument("candidate", type=Path)
@@ -36,7 +36,7 @@ def main():
                     text = output.read()
                     if process.returncode:
                         raise subprocess.CalledProcessError(process.returncode, command, text)
-            row = {key: float(value) for key, value in re.findall(r"(\w+)=([0-9.]+)", text)}
+            row = {key: float(value) for key, value in re.findall(r"(\w+)=([+-]?[0-9.]+)", text)}
             row["peak_rss_kib"] = usage.ru_maxrss
             print(json.dumps({"iteration": iteration, "label": label, **row}), flush=True)
             if iteration >= 2:

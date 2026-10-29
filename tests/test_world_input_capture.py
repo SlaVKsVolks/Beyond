@@ -45,6 +45,7 @@ class WorldInputCaptureTests(unittest.TestCase):
     def test_capture_lifecycle(self):
         source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
         fixture = r'''
+#![forbid(unsafe_code)]
 use std::cell::Cell;
 #[derive(Clone, Copy, PartialEq)]
 enum Screen { Playing, Paused, Inventory, Chat }
@@ -189,7 +190,7 @@ fn main() {
             rust = folder / "capture.rs"
             binary = folder / ("capture.exe" if os.name == "nt" else "capture")
             rust.write_text(fixture, encoding="utf-8")
-            subprocess.run(["rustc", "--edition=2024", str(rust), "-o", str(binary)],
+            subprocess.run(["rustc", "-Funsafe_code", "--edition=2024", str(rust), "-o", str(binary)],
                            check=True, capture_output=True, text=True, timeout=60)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=10)
 

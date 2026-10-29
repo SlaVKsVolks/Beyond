@@ -85,7 +85,7 @@ struct Watch {
 }
 
 pub fn run(dir: &Path) -> Result<(), String> {
-    signals::install();
+    let mut stop_requests = signals::observer()?;
     let config = Config::load(dir)?;
     let program = engine::program(&config, dir)?;
     let resources = engine::resources(&config, dir, Some(&program))?;
@@ -152,7 +152,13 @@ pub fn run(dir: &Path) -> Result<(), String> {
         if let Some(w) = &mut watch {
             w.deadline = Instant::now() + w.timeout;
         }
-        let exit = supervise(&shared, &mut child, &console, &mut watch);
+        let exit = supervise(
+            &shared,
+            &mut child,
+            &console,
+            &mut watch,
+            &mut stop_requests,
+        );
         {
             let mut state = shared.state.lock().unwrap();
             state.engine_pid = None;
@@ -249,7 +255,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
         shared.set_phase(Phase::Restarting);
         let until = Instant::now() + wait;
         while Instant::now() < until {
-            if signals::requests() > 0 || shared.stop.load(Ordering::SeqCst) {
+            if stop_requests.requests() > 0 || shared.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(100));
@@ -578,6 +584,7 @@ fn supervise(
     child: &mut Child,
     console: &mpsc::Receiver<String>,
     watch: &mut Option<Watch>,
+    stop_requests: &mut signals::StopRequests,
 ) -> Exit {
     if let Some(out) = child.stdout.take() {
         pump(shared, out, false);
@@ -589,7 +596,7 @@ fn supervise(
     let mut stopping: Option<Instant> = None;
     let mut restart = false;
     let mut not_up = false;
-    let mut handled = signals::requests();
+    let mut handled = stop_requests.requests();
     loop {
         if let Some(w) = watch.as_ref() {
             if up(shared) {
@@ -620,7 +627,7 @@ fn supervise(
                 stdin = None;
             }
         }
-        let requests = signals::requests();
+        let requests = stop_requests.requests();
         let asked = requests > handled || shared.stop.swap(false, Ordering::SeqCst);
         handled = requests;
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {

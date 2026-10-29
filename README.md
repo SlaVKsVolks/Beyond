@@ -1,3 +1,17 @@
+# Beyond
+
+**Beyond** is SlaVKsVolks' independently developed fork of **Horizon**. Its implementation may diverge from upstream to meet the owner's requirements and custom Rust rules; upstream implementation parity is not a requirement in itself.
+
+This fork currently focuses on Windows. Rust compliance and the internal product/package rename are **not complete**. The reviewed safe-console fixture is integrated at source level; full candidate and native runtime acceptance remain separate. The remaining blockers are recorded in [the Rust assurance ledger](docs/rust-assurance.md). Existing save/configuration paths and protocol identifiers have not been renamed or migrated.
+
+- Repository: [SlaVKsVolks/Beyond](https://github.com/SlaVKsVolks/Beyond).
+- [Fork identity, scope and migration status](docs/beyond-fork.md).
+- No Beyond release, installer or deployment is announced by this rename.
+
+## Upstream Horizon reference
+
+The material below is retained from upstream for reference and attribution. Its branding, downloads, badges, service links and platform/parity claims describe **Horizon upstream**, not verified Beyond builds or services.
+
 <p align="center">
   <img src="docs/media/banner.webp" alt="Horizon: Minecraft: Java Edition 26.3, rewritten in Rust and checked against vanilla by 281 differential harnesses" width="100%">
 </p>
@@ -104,7 +118,7 @@ Commands block until the action is done and reply with what happened; errors are
 
 ## Build from source
 
-For developers. Requirements: Rust 1.90 or newer, Python 3.10 or newer, JDK 25, and on Linux the ALSA and udev development headers (`libasound2-dev libudev-dev` on Debian and Ubuntu). Development and the vanilla harnesses run on Linux.
+For developers. Requirements: Rust 1.99.1 (the pinned development compiler; older compilers are unsupported), Python 3.10 or newer, JDK 25, and on Linux the ALSA and udev development headers (`libasound2-dev libudev-dev` on Debian and Ubuntu). Development and the vanilla harnesses run on Linux.
 
 Horizon contains no game files and never downloads them. It builds its resources from **your own copy** of Minecraft: Java Edition 26.3, verified against the checksums in `research-lock.json`:
 

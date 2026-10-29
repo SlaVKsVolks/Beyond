@@ -1,10 +1,14 @@
 [package]
+rust-version = "1.99.1"
 name = "horizon-console-probe"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [[bin]]
 name = "console-probe"

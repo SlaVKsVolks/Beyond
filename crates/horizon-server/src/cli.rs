@@ -403,9 +403,9 @@ pub fn logs(dir: &Path, follow: bool, count: usize) -> Result<(), String> {
     if !follow {
         return Ok(());
     }
-    signals::install();
+    let mut stop_requests = signals::observer()?;
     let mut next = reply["next"].as_u64().unwrap_or(0);
-    while signals::requests() == 0 {
+    while stop_requests.requests() == 0 {
         std::thread::sleep(Duration::from_millis(500));
         let Ok(reply) = client.call("GET", &format!("/api/v1/logs?since={next}"), None) else {
             break;

@@ -8,11 +8,38 @@ use horizon_mods::{
     testing::{Script, TestGame},
 };
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
     time::Instant,
 };
+
+fn mods_target(root: &Path, configured: Option<&OsStr>) -> PathBuf {
+    configured
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| root.join("target"), |path| root.join(path))
+        .join("mods-test")
+}
+
+#[test]
+fn mods_target_uses_the_configured_target_directory() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert_eq!(mods_target(&root, None), root.join("target/mods-test"));
+    assert_eq!(
+        mods_target(&root, Some(OsStr::new(""))),
+        root.join("target/mods-test")
+    );
+    let absolute = std::env::temp_dir().join("horizon-absolute-target");
+    assert_eq!(
+        mods_target(&root, Some(absolute.as_os_str())),
+        absolute.join("mods-test")
+    );
+    assert_eq!(
+        mods_target(&root, Some(OsStr::new("custom-target"))),
+        root.join("custom-target/mods-test")
+    );
+}
 
 const GUEST_MANIFEST: &str = r#"
 id = "test_guest"
@@ -35,7 +62,7 @@ fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let target = root.join("target/mods-test");
+        let target = mods_target(&root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
         let status = Command::new(env!("CARGO"))
             .current_dir(&root)
             .args(["build", "--release", "--target", "wasm32-unknown-unknown"])

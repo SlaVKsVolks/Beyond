@@ -10,6 +10,8 @@ use std::{
 
 /// The largest request body the API takes (a console command, a settings change).
 const MAX_BODY: usize = 1 << 20;
+/// The longest request line or header line accepted, including its newline.
+const MAX_LINE: usize = 8 << 10;
 
 pub struct Request {
     pub method: String,
@@ -91,11 +93,32 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+/// Stop after one byte beyond the line limit, even if no newline arrives.
+fn read_line_bounded(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<usize> {
+    let n = reader.by_ref().take(MAX_LINE as u64 + 1).read_line(line)?;
+    if n > MAX_LINE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "line too long",
+        ));
+    }
+    Ok(n)
+}
+
 fn read_request(stream: &TcpStream) -> Result<Request, Response> {
     let bad = |m: &str| Response::error(400, m);
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|_| bad("no request"))?;
+    let read_line = |reader: &mut BufReader<&TcpStream>, line: &mut String, what: &str| {
+        read_line_bounded(reader, line).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                bad("line too long")
+            } else {
+                bad(what)
+            }
+        })
+    };
+    read_line(&mut reader, &mut line, "no request")?;
     let mut parts = line.split_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         return Err(bad("malformed request line"));
@@ -104,7 +127,7 @@ fn read_request(stream: &TcpStream) -> Result<Request, Response> {
     let mut headers = Vec::new();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).map_err(|_| bad("headers"))? == 0 || line.trim().is_empty() {
+        if read_line(&mut reader, &mut line, "headers")? == 0 || line.trim().is_empty() {
             break;
         }
         if headers.len() > 64 {
@@ -211,6 +234,73 @@ pub fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the real parser without starting serve's permanent accept thread.
+    fn parse_bytes(bytes: &[u8]) -> Result<Request, Response> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sender =
+            TcpStream::connect_timeout(&listener.local_addr().unwrap(), Duration::from_secs(2))
+                .unwrap();
+        sender
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (receiver, _) = listener.accept().unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        sender.write_all(bytes).unwrap();
+        // Keep the writer open: a line without a newline must hit the cap,
+        // not depend on the peer closing its write side to finish reading.
+        read_request(&receiver)
+    }
+
+    #[test]
+    fn oversized_request_lines_are_rejected_with_or_without_newline() {
+        for suffix in [" HTTP/1.1\r\n\r\n", ""] {
+            let bytes = format!("GET /{}{suffix}", "a".repeat(8192));
+            match parse_bytes(bytes.as_bytes()) {
+                Err(response) => {
+                    assert_eq!(response.status, 400);
+                    let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+                    // A read timeout is also 400, but must not pass this regression.
+                    assert_eq!(body["error"], "line too long");
+                }
+                Ok(_) => panic!("accepted an oversized request line"),
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_header_lines_are_rejected() {
+        let bytes = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(8192));
+        match parse_bytes(bytes.as_bytes()) {
+            Err(response) => {
+                assert_eq!(response.status, 400);
+                let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+                assert_eq!(body["error"], "line too long");
+            }
+            Ok(_) => panic!("accepted an oversized header line"),
+        }
+    }
+
+    #[test]
+    fn request_and_header_lines_at_the_limit_are_preserved() {
+        // 5 + 8176 + 11 = 8192 bytes in the request line;
+        // 3 + 8187 + 2 = 8192 bytes in the header line.
+        let bytes = format!(
+            "GET /{} HTTP/1.1\r\nX: {}\r\n\r\n",
+            "a".repeat(8176),
+            "b".repeat(8187)
+        );
+        let request = match parse_bytes(bytes.as_bytes()) {
+            Ok(request) => request,
+            Err(response) => panic!("rejected a boundary-sized line: {}", response.status),
+        };
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, format!("/{}", "a".repeat(8176)));
+        assert_eq!(request.header("X"), Some("b".repeat(8187).as_str()));
+        assert!(request.body.is_empty());
+    }
 
     #[test]
     fn round_trip() {

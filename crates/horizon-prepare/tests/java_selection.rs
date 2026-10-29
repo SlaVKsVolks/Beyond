@@ -1,3 +1,5 @@
+#![cfg_attr(windows, forbid(unsafe_code))]
+
 //! Each scenario runs in its own process so Java discovery sees a controlled environment.
 use horizon_prepare::java;
 use std::{env, fs, path::Path, process::Command};
@@ -62,6 +64,7 @@ fn selects_a_compatible_compiler_and_runtime() {
     fs::create_dir_all(&root).unwrap();
     let probe = tool(&root, "probe");
     let output = Command::new("rustc")
+        .arg("-Funsafe_code")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/java_probe.rs"))
         .arg("-o")
         .arg(&probe)

@@ -20,12 +20,68 @@ pub struct SpawnEntry {
     /// A `ConstantInt` count (sampling draws nothing).
     pub constant: bool,
 }
+/// A `natural_mob_spawns` / `spawn_overrides` entry list.
+pub fn parse_entries(list: &Value) -> Vec<SpawnEntry> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let count = &e["count"];
+            let (min, max, constant) = match count {
+                Value::Number(n) => {
+                    let n = n.as_u64().unwrap_or(1) as u32;
+                    (n, n, true)
+                }
+                c if c["type"].as_str() == Some("minecraft:constant") => {
+                    let n = c["value"].as_u64().unwrap_or(1) as u32;
+                    (n, n, true)
+                }
+                c => (
+                    c["min_inclusive"].as_u64().unwrap_or(1) as u32,
+                    c["max_inclusive"].as_u64().unwrap_or(1) as u32,
+                    false,
+                ),
+            };
+            Some(SpawnEntry {
+                entity: e["type"].as_str()?.to_owned(),
+                weight: e["weight"].as_u64().unwrap_or(1) as u32,
+                min,
+                max,
+                constant,
+            })
+        })
+        .collect()
+}
+/// `MobSpawnSettings.MobSpawnCost`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpawnCost {
+    pub energy_budget: f64,
+    pub charge: f64,
+}
+/// The `spawn_costs` of a `natural_mob_spawns` value.
+pub fn parse_costs(costs: &Value) -> HashMap<String, SpawnCost> {
+    costs
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, c)| {
+            (
+                k.clone(),
+                SpawnCost {
+                    energy_budget: c["energy_budget"].as_f64().unwrap_or(0.0),
+                    charge: c["charge"].as_f64().unwrap_or(0.0),
+                },
+            )
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct BiomeInfo {
     /// `natural_mob_spawns` by category (creature, monster, ...).
     pub spawns: HashMap<String, Vec<SpawnEntry>>,
     /// `natural_mob_spawns` spawn costs by entity type.
-    pub spawn_costs: HashMap<String, crate::mobs::spawn_selection::SpawnCost>,
+    pub spawn_costs: HashMap<String, SpawnCost>,
     /// The `gameplay/creature_world_gen_spawn_probability` attribute.
     pub creature_probability: f32,
     pub name: String,
@@ -118,12 +174,12 @@ impl Biomes {
             };
             let categories = &natural["spawns_by_category"];
             for (category, entries) in categories.as_object().into_iter().flatten() {
-                let list = crate::mobs::spawn_selection::parse_entries(entries);
+                let list = parse_entries(entries);
                 spawns.insert(category.clone(), list);
             }
             list.push(BiomeInfo {
                 spawns,
-                spawn_costs: crate::mobs::spawn_selection::parse_costs(&natural["spawn_costs"]),
+                spawn_costs: parse_costs(&natural["spawn_costs"]),
                 creature_probability:
                     attributes["minecraft:gameplay/creature_world_gen_spawn_probability"]
                         .as_f64()
@@ -246,6 +302,107 @@ pub fn blend_rgb(weights: &[(u16, f64)], mut value: impl FnMut(u16) -> [f32; 3])
         });
     }
     result.unwrap_or([0.0; 3])
+}
+
+#[cfg(test)]
+mod spawn_parser_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn spawn_entries_keep_count_forms_and_skip_missing_entity_types() {
+        let entries = parse_entries(&json!([
+            {"type": "minecraft:pig", "weight": 7, "count": 3},
+            {"type": "minecraft:cow", "count": {"type": "minecraft:constant", "value": 2}},
+            {"type": "minecraft:sheep", "count": {"min_inclusive": 2, "max_inclusive": 5}},
+            {"weight": 100, "count": 8},
+            {"type": 42}
+        ]));
+        let fields: Vec<_> = entries
+            .iter()
+            .map(|e| (e.entity.as_str(), e.weight, e.min, e.max, e.constant))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("minecraft:pig", 7, 3, 3, true),
+                ("minecraft:cow", 1, 2, 2, true),
+                ("minecraft:sheep", 1, 2, 5, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_entry_defaults_and_non_lists_remain_conservative() {
+        for value in [json!(null), json!({}), json!(5)] {
+            assert!(parse_entries(&value).is_empty());
+        }
+        let entries = parse_entries(&json!([
+            {"type": "minecraft:pig"},
+            {"type": "minecraft:cow", "weight": -1, "count": -2},
+            {"type": "minecraft:sheep", "count": {"type": "minecraft:constant"}}
+        ]));
+        let fields: Vec<_> = entries
+            .iter()
+            .map(|e| (e.weight, e.min, e.max, e.constant))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![(1, 1, 1, false), (1, 1, 1, true), (1, 1, 1, true)]
+        );
+    }
+
+    #[test]
+    fn spawn_costs_keep_explicit_values_and_zero_defaults() {
+        assert!(parse_costs(&json!(null)).is_empty());
+        assert!(parse_costs(&json!([])).is_empty());
+        let costs = parse_costs(&json!({
+            "minecraft:pig": {"energy_budget": 2.5, "charge": 0.75},
+            "minecraft:cow": {"energy_budget": "invalid"},
+            "minecraft:sheep": null
+        }));
+        assert_eq!(costs.len(), 3);
+        assert_eq!(
+            costs["minecraft:pig"],
+            SpawnCost {
+                energy_budget: 2.5,
+                charge: 0.75
+            }
+        );
+        assert_eq!(
+            costs["minecraft:cow"],
+            SpawnCost {
+                energy_budget: 0.0,
+                charge: 0.0
+            }
+        );
+        assert_eq!(
+            costs["minecraft:sheep"],
+            SpawnCost {
+                energy_budget: 0.0,
+                charge: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_spawn_selection_paths_keep_the_same_public_types() {
+        let entries: Vec<SpawnEntry> = crate::mobs::spawn_selection::parse_entries(&json!([
+            {"type": "minecraft:pig", "count": 4}
+        ]));
+        assert_eq!(entries[0].min, 4);
+        let costs: HashMap<String, SpawnCost> = crate::mobs::spawn_selection::parse_costs(&json!({
+            "minecraft:pig": {"energy_budget": 1.5, "charge": 0.25}
+        }));
+        let old_path: crate::mobs::spawn_selection::SpawnCost = costs["minecraft:pig"];
+        assert_eq!(
+            old_path,
+            SpawnCost {
+                energy_budget: 1.5,
+                charge: 0.25
+            }
+        );
+    }
 }
 
 #[cfg(test)]

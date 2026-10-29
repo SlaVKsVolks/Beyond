@@ -448,10 +448,10 @@ impl Writer {
             self.lights = Lights::Reset;
         }
         // The reset goes alone, before any colour (hid-playstation.c).
-        if first.full_power || first.release_leds {
-            if let Err(e) = pad.write(&first) {
-                return self.lost(&e.to_string());
-            }
+        if (first.full_power || first.release_leds)
+            && let Err(e) = pad.write(&first)
+        {
+            return self.lost(&e.to_string());
         }
         let mut out = Output {
             rumble: motors,

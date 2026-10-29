@@ -1,0 +1,730 @@
+# Rust assurance contract and acceptance ledger
+
+This record captures the pre-edit contract for the 2026-10-27 bounded Rust-assurance work against base `41af517023e96905a03e1e8999178dbce6a82a92`. It is not evidence that a gate has passed. The coordinator must reconcile it with the final integrated diff and actual check output.
+
+## Contract
+
+**Goal:** Make safe, reviewable progress toward the user's Rust profile while retaining Horizon's behavior and honestly reporting blockers. **Non-goals:** feature changes, Rust dependency or layout changes, tool installation, game execution, deployment, remote writes, branch protection changes, unsafe exceptions and universal safety claims.
+
+**Assumptions:** Existing behavior and test assertions are contracts unless the user says otherwise. Root workspace edition 2024/MSRV 1.85, launcher's edition 2021, and telemetry-server/mod-registry MSRV 1.90 remain unchanged. Existing unsafe is not authorization to expand or relocate it. Source inspection cannot establish unsafe-free dependencies. Platform-specific acceptance needs its own environment and permission.
+
+**Ownership:** Separate worktrees and disjoint paths: guard owns manifests, guard and tests, pr_ready/CI; native owns native OS files; benchmark owns allocation-counting examples; governance owns this record, design and plan; verifier is read-only. No lane may silently expand ownership. Shared interface is the integrated diff and evidence, not imports from sibling worktrees.
+
+**Errors and edge cases:** Missing or malformed manifests, unsupported targets/features, missing tools, empty scopes and guard failure must be surfaced, never silently passed. Preserve platform-specific return and error behavior, unavailable or denied OS operations, allocator accounting including realloc/zeroed/deallocation, and existing test observables. Do not author negative unsafe fixtures.
+
+**Resource, concurrency and lifecycle:** Preserve allocation counters and benchmark semantics, native scheduling, signal registration and repeated shutdown requests, thread behavior, handles, process lifetimes, reflink cleanup and publication. Do not add shared state, leaks, lock cycles or unbounded growth. Independent review is required for changes touching safety, concurrency, resource lifecycle, FFI, security or public contracts. Routine isolated automated tests are authorized, including their own process-priority operations, temporary probes, ephemeral loopbacks and non-serving availability binds. Installed GUI/game runs, deployment, installation, remote actions and production runtime acceptance are not authorized. Tests that accept on unspecified addresses exceed that bound.
+
+## Requirement → invariant → observable acceptance
+
+Statuses distinguish scoped results from the remaining full-profile gates. NOT RUN and BLOCKED are never PASS.
+
+| Requirement | Invariant/property | Observable check and initial status | Residual gap |
+| --- | --- | --- | --- |
+| Preserve features, APIs and errors | No behavior, target, Rust dependencies, version floors or existing checks lost | Diff and manifest review; focused normal/failure tests and prescribed checks: NOT RUN | Platform behavior and full supported matrix not established |
+| No added or relocated first-party unsafe | No new unsafe or evasion through generated code, macros, C, build scripts or dependencies | Full diff and target/source inspection: NOT RUN | Existing unsafe must be assessed separately; dependency internals are outside proof |
+| Forbid unsafe across all first-party packages and targets | Actual compiler lint applies to every target, including separate workspaces | Manifest/target scope plus guarded safe builds: BLOCKED | Existing native and allocator unsafe targets cannot be blanket-forbidden while preserving features; no negative unsafe fixture allowed |
+| Fail-closed guard and CI | Missing, malformed and uncovered inputs fail visibly; required CI blocks integration | Final Python tests: PASS; actual guard: FAIL on known gaps | CI execution and remote branch protection are distinct and not authorized here |
+| Preserve resource, concurrency and lifecycle behavior | Allocation metrics, OS scheduling, signal/handle lifetimes and cleanup remain intact | Focused tests and independent diff review: NOT RUN | Native scheduling, shutdown, console, reflink and appearance runtime not tested |
+| Preserve failure paths | Errors, timeouts, cancellation, I/O and resource exhaustion retain relevant semantics | Focused tests where applicable and review: NOT RUN | No claim for untested paths; property testing, fuzzing and fault injection only where justified |
+| Prescribed project verification | All applicable configured format, lint, build and test checks pass for actual inputs | Earlier `pr_ready` run: FAIL; final-revision full rerun: NOT RUN | Tool availability, supported targets and required resources must be recorded |
+| Independent review | Reviewer did not implement safety/public/concurrency changes and checks ledger, full diff and evidence | Independent integrated review: PASS for bounded corrective diff | Full-profile acceptance remains blocked |
+| Runtime and user acceptance | Separate source, configured, execution, CI, OS runtime and user layers | Runtime and user acceptance: NOT RUN | No installed GUI/game or production/deployment acceptance; isolated automated checks are bounded as above |
+
+## Known native boundaries
+
+The native lane's source assessment found no established safe existing equivalent preserving all semantics for thread priority (`crates/horizon-threads/src/lib.rs`), supervisor signal handlers (`crates/horizon-server/src/signals.rs`), console-aware process creation (`crates/horizon-server/src/process.rs`), clone-before-copy (`crates/horizon-prepare/src/files.rs`), launcher console attachment and macOS titlebar appearance (`launcher/src/console.rs`, `launcher/src/titlebar.rs`), and Windows console-visibility test probe (`launcher/tests/support/console_probe.rs`). Its report is a bounded source assessment, not an exhaustive compiler inventory or proof that no external library exists. The counting allocators in `crates/horizon-client/examples/model_library_bench.rs` and `resource_memory.rs` also use unsafe. Do not claim full profile compliance until every applicable target and required gate passes without violating the contract.
+
+## Scoped decisions and evidence received
+
+The initial no-dependencies wording was stricter than the request. The coordinator authorized only the Python development TOML parser backport `tomli==2.0.1; python_version < "3.11"`, declared in `requirements-dev.txt`; it adds a developer dependency burden. No installation was authorized or performed, and Python 3.10 acceptance is NOT RUN. Rust dependencies and unsafe boundaries remain unchanged.
+
+Four package-level `unsafe_code = "forbid"` lints are in the scoped work: `horizon-theme`, `horizon-bench`, the standalone telemetry server and mod registry. The guard lane reports an all-target check PASS for theme and bench under installed Rust 1.99.1; standalone builds are BLOCKED by uncached `crc32fast 1.5.3` and `tokio 1.54.1`, respectively. These are lane results, not yet final integration evidence. The active toolchain is inherited from `C:\Users\SlaVKs\Development\Github\rust-toolchain.toml`, rather than the older 1.92 assumption.
+
+The first guard-review findings on directory exclusions, parser handling and the console probe were addressed. A later independent review identified junction/reparse and Cargo external target/path-dependency containment defects; the scoped re-review initially found both addressed in integrated fix `fe6d634f8`, but that verdict was retracted after the actual guard raised metadata errors for registry dependencies without a `path` field. The registry-field corrective fix is integrated at `12f2df2eaf244d6ffb6cfd1c828bdd8ca6aee56e`; independent review found the corrective finding addressed and no new actionable issue in that bounded diff. Actual Windows junction and Python 3.10 execution remain NOT RUN. Directly compiled Rust includes the console probe, launcher Java backend tests and test-generated programs; this is not an exhaustive inventory.
+
+Initial integrated verification reported 353 Python tests passed with 11 skipped; it predates the final guard fix. Both configured CI Clippy commands passed offline with Rust 1.99.1: workspace all-targets with mods, and client all-targets without default features. The unmodified `pr_ready --base 41af517023e96905a03e1e8999178dbce6a82a92 --verbose` exited 1: public-tree, Python, Clippy, 14 bench/theme tests, selected doc tests and token checks passed; the guard failed on known missing lint and direct-rustc coverage; root and launcher formatting failed on baseline CRLF/newline differences; launcher Clippy and tests were blocked by uncached `gpui`; parity was listed but not run without vanilla data. Separate telemetry and registry all-target checks were blocked by uncached `crc32fast 1.5.3` and `tokio 1.54.1` respectively. These checks do not prove live CI or runtime acceptance.
+
+The full workspace Rust test run compiled but was INTERRUPTED. The existing `horizon_friends::direct::tests::the_race_connects_and_checks_the_session` had already passed after binding unspecified IPv4/IPv6 addresses and briefly accepting, despite its loopback comment; the verifier stopped the broad suite after tracing it. Absence of evidence of external connections is not proof that none occurred. A scoped post-interruption check found no running process with an executable under the verifier target, no cargo/rustc process and no remaining task-target-owned listener. Root doc tests after the interruption are NOT RUN; selected bench/theme doc tests passed in pr_ready. The final corrective revision passed 363 Python tests with 11 skips in 41.660 seconds. Its actual guard exited 1 with 32 missing package forbids and four direct inputs, with zero metadata failures or uncovered packages.
+
+Full compliance is BLOCKED by existing native and allocator unsafe, 32 missing package-wide bans and four identified independently compiled programs. The guard is intentionally nonzero on these gaps; GitHub CI execution and remote protection are NOT RUN. The initial no-dependency assumption was narrowed to the Python-only backport, whose cost is an additional developer dependency. Blanket forbid would break existing targets; dropping native operations or allocator metrics would change behavior; moving unsafe behind wrappers or dependencies would violate the user constraint. Retaining those boundaries preserves behavior but leaves the profile incomplete. The extra corrective wave overrides the one-wave process cap to avoid handing off a broken validator; its cost is targeted tests and one full Python rerun. No blanket exemptions or dependency-safety claims are implied.
+
+The final evidence is retained in `C:\Users\SlaVKs\Development\Github\Game-Engine\.worktrees\horizon-rust-verify\.superpowers\sdd\2026-10-27-rust-compliance\independent-integrated-review.md` and sibling `final2-python.*`, `final2-guard.*` and `final2-diffcheck.*` files. This local record is evidence, not a runtime dependency. The complete integrated change comprises 13 files: `.github/workflows/ci.yml`, `AGENTS.md`, the four scoped package manifests, this ledger and the two design/plan files, `requirements-dev.txt`, `tests/test_rust_safety.py`, `tools/check_rust_safety.py`, and `tools/pr_ready.py`.
+
+The verification target has 13,807,424,616 apparent bytes; C: free was 53,940,531,200 bytes at the last snapshot. The verifier owns it for retained build evidence pending acceptance. Cleanup was held because the normal Cargo output lock, per-file eligibility and absence of live references were not established. These are apparent-size and free-space observations, not reclaimed-space proof.
+
+## Phase 2 contract and acceptance ledger — 2026-10-27
+
+This section supersedes the phase-one status for new work while retaining that history above. Base is `197215297e3483981da3219f1adee41faf3ad058`. Goal: address the 32 package and four identified independent-input coverage gaps where safe, fix test network isolation without changing normal networking, and finish applicable checks. Full compliance remains BLOCKED wherever existing unsafe cannot be removed without changing behavior. Do not add or relocate first-party unsafe, weaken existing lint behavior, remove features, add Rust dependencies, alter supported Cargo layouts, edition, MSRV or targets, run an installed GUI/game, deploy, or write remote state. Preserve existing native and allocator boundaries. No negative unsafe fixtures.
+
+**Isolation contract:** Default `AllInterfaces` behavior remains unchanged. An additive typed `NetworkScope::Loopback` path is intended for test fixtures and must constrain listeners, direct candidates, advertised endpoints and relay DNS to loopback literals, while bypassing external reachability discovery. Preserve authentication, race, relay fallback, address-family behavior, errors, deadlines, teardown and existing assertions. Test every listener before accepting; non-loopback inputs must fail rather than escape. This is a public/concurrency and lifecycle change requiring review by someone who did not implement it. Scope is the direct, LAN and relay paths traced by the lane, not an assertion that every possible transitive network path was discovered.
+
+**Enforcement contract:** Apply package `unsafe_code = "forbid"` only where existing code and target behavior allow it. The 27 candidate packages cannot combine Cargo workspace lint inheritance with a local Rust lint table, so preserve the four existing effective Clippy allow settings verbatim and check for policy drift, priorities and additional allowances. The previously stricter theme and bench packages must stay stricter. The existing unsafe packages client, server, threads, prepare and launcher remain BLOCKED without exemptions masquerading as compliance. Identify and check three safe direct inputs and the discovered generated Sprite Cargo root; the existing unsafe console probe remains BLOCKED. Recognized compiler/generator flows must be checked and unknown literal new drivers fail closed. Dynamic aliases and undiscovered compiler paths are not proven absent.
+
+**Resource and effects contract:** Use only the shared verification target, capped at 24 GiB apparent size with at least 32 GiB free; protect active and unrelated worktrees, including the Linux-reflink worktree. Existing locked dependencies may be fetched within that budget; no version changes, toolchain installations or upgrades. Rust 1.99.1 is the inherited active toolchain. Normalize only task-owned checkout line endings where needed for checks, preserving Git's semantic diff; do not change global configuration or bulk-format source. Preserve test resources, cancellation, error behavior and cleanup. No new broad listener, public service, installed application or production-runtime acceptance is authorized.
+
+| Requirement | Invariant and observable proof | Integrated status and gap |
+| --- | --- | --- |
+| Package enforcement | Each safe candidate forbids unsafe across its applicable targets; effective existing Clippy policies and stricter packages are unchanged. Review manifests and fail-closed drift tests; compile/check actual targets. | Partial checks PASS on stated revisions; final guard reports five native-unsafe packages BLOCKED. Final affected build/target matrix is BLOCKED by storage. |
+| Direct-input coverage | Safe direct programs and generated Sprite Cargo root receive effective compiler forbids; recognized drivers are checked, unknown literal new drivers fail closed. Exercise actual drivers and helper failure fixtures. | Scoped review and selected driver checks PASS on stated revisions; unsafe console probe BLOCKED. Dynamic aliases and exhaustive discovery remain unproven. |
+| Loopback isolation | All test listeners, advertised endpoints, direct candidates and relay resolution are loopback before accepting; defaults retain existing behavior and errors. Run focused RED/GREEN and failure cases, including relay and concurrent teardown. | Scoped network and relay checks PASS on stated revisions with independent source review. Full final affected suite is BLOCKED by storage; later sandbox helper GREEN is not established. |
+| Preserve normal behavior and safety | No new or hidden unsafe, feature removal, dependency/version changes or weakened checks; full diff, target checks and independent public/concurrency review. | Independent scoped source review found no actionable issue on the reviewed revisions; final full acceptance remains BLOCKED. Source checks do not prove dependency or macro internals safe. |
+| Verification and acceptance | Run prescribed applicable fmt, Clippy, tests and guard on final inputs; record failures, unavailable resources, CI and OS/runtime separately. | Final guard FAILS on six known boundaries; public-tree and diff checks PASS; formatting FAILS on newline checks. Full final build/test checks BLOCKED by storage. CI execution, remote protection, GUI/game, deployment and cross-platform acceptance remain NOT RUN. |
+
+**Intermediate evidence, not final acceptance:** guard candidate `697a17be0aa12ca5498a1ca566b5ece24a122b7b` reports 26 focused tests passing; direct-input helper reports nine focused tests and three generated Rust probe tests passing. The direct friends test was RED on the original pre-accept assertion; its fresh authorized-context candidate run passed after an earlier restricted child run failed with Windows 10013. The LAN pre-accept test was RED before its fix; subsequent focused results are recorded below. Historical Sprite extraction is already missing `AnimatedSprites`/`animate_sprites`; do not claim it passed or change its metrics to hide that issue. These observations are lane reports and must be reconciled against final source, integrated commands, independent review and full output before changing ledger statuses.
+
+### Phase 2 integrated evidence received (provisional)
+
+The independent review of coverage/direct revision `d9f79087` and import correction `dcd11c785` found no actionable issue, including a comparison of all 27 candidate manifests. On the latter revision, Python discovery ran 379 tests, OK (skipped=11); the guard exited nonzero for exactly five existing unsafe packages and the unsafe console probe, with no metadata errors. These outcomes remain scoped: dynamic compiler drivers, dependency internals and complete unsafe prohibition are not proven.
+
+On coverage/direct revision `d9f7908`, workspace all-targets Clippy with mods and client all-targets Clippy without default features passed, as did standalone telemetry and registry Clippy. Launcher all-target Cargo check passed with a `proc-macro-error2` future-incompatibility warning. One Java-selection test passed. Focused network scope (5/5), direct (5/5) and LAN (1/1) passed on the tested native snapshot; subsequent source edits invalidate affected proofs. The full relay suite failed one of nine tests: the second short-code Auto join reported host attachment/connect timeout (`HostUnreachable`); a narrow loopback attachment fix is pending review and rerun. The native six-file snapshot review found no outstanding source finding at that point, but it is not a review of later changes. Expanded tests' fail-before evidence is NOT PROVEN: an auto-review rejected the attempted reconstruction. Do not infer strict TDD from these results.
+
+Evidence is retained in the verifier worktree under `.superpowers/sdd/2026-10-27-rust-compliance/phase2-verification.md` and `phase2-exec-20261027-b/`, including `python-integrated-fixed.log`, `guard-integrated-fixed.log`, Clippy and focused network logs. Full final integrated checks, native review of the latest fix, CI execution, platform/runtime acceptance and user acceptance remain NOT RUN or pending. Results above are tied to their stated revisions and must be re-evaluated after relevant changes.
+
+### Phase 2 further evidence and storage boundary
+
+On integrated revision `f77bb82435959d4bf26221666d9c57c63b85de6e`, the previously failing exact short-code relay test and all nine relay tests passed; independent source review accepted the fix. This does not establish the operating-system cause of the earlier timeout. Launcher all-target Clippy passed with a future-incompatibility warning. A separate mods sandbox test was found to hardcode another cache; the test-only helper to honor `CARGO_TARGET_DIR` is integrated in source snapshot `94f78f7e1eed545acc2ce70f57d21cf58f92190d`, with independent review reporting no actionable finding. A real RED test was recorded; GREEN remains BLOCKED by storage. No unchanged-input result is evidence for changed source.
+
+A formatting preparation mistakenly converted 1,645 tracked checkout files before being stopped. All 1,645 were immediately restored to their pre-operation byte hashes with zero mismatches and unchanged Git semantic diff; the preview and restore receipts are retained. Nine task-owned Rust files were then normalized to LF with clean-filter equivalence and unchanged Git diff. This does not establish a workspace-wide formatting pass.
+
+The final storage gate is BLOCKED; no further build is authorized until it clears. The verifier-owned shared target was measured at 25,274,524,266 apparent bytes and C: free at 35,236,212,736 bytes when launcher compilation stopped before its own caps; that stop produced no test result. Later unrelated work consumed additional space, with C: free observed at 31,032,336,384 bytes, below the 32 GiB floor. Those other worktrees and processes are outside this task's ownership.
+
+A cleanup inventory identified 19,471 unique `.bin`/`.o` candidates totaling approximately 11.36 GB allocated. A task-owned probe demonstrated the normal Cargo artifact-directory lock by observing `Blocking waiting for file lock on artifact directory`; it was stopped before unlocking. However, 141–150 processes exposed no module information, so absence of live references could not be established. No deletion or reclaim was performed. The target remains owned by this verification task and retained for pending acceptance; any later cleanup requires fresh per-file journal/eligibility, live-reference proof and the normal lock. Full root tests, docs, pr_ready and final affected CI checks remain BLOCKED by storage, not passed.
+
+On final source snapshot `94f78f7e1eed545acc2ce70f57d21cf58f92190d`, the non-build guard exited 1 for the five existing unsafe package gaps and console probe; public-tree and `git diff --check` passed (the latter emitted a CRLF conversion warning). Root formatting failed with 1,488 incorrect-newline entries and no formatting diff headers; launcher formatting failed with 62 newline entries and no formatting diff headers. Stable rustfmt emitted 384 and 21 option warnings respectively. At that check C: free was 29,598,846,976 bytes, below the floor, so builds remained held. Full output is in the verifier worktree under `.superpowers/sdd/2026-10-27-rust-compliance/phase2-exec-20261027-b/final-nonbuild-results.txt` and sibling `final-*.log` files. Prior 379/11 Python results are reused only for unchanged relevant inputs; final Rust checks, full pr_ready and sandbox GREEN are not claimed.
+
+The task-owned sandbox source was subsequently normalized to LF with its clean Git blob unchanged; a single-file rustfmt check passed with three stable-option warnings. Receipts are sandbox-lf-repair.log and sandbox-single-fmt.log in the same evidence directory. This does not clear the earlier workspace-wide formatting failures, which were not rerun.
+
+## Phase 3 storage and verification contract — 2026-10-27
+
+This contract supersedes phase 2's C-only build budget for the resumed checks, while preserving its Rust, safety, behavior and acceptance requirements. The reviewed source is `05b5ae7e28cd4ed28143ef2e038d4db14e47c167` with Rust source snapshot `94f78f7e1eed545acc2ce70f57d21cf58f92190d`; preserve the source, inherited toolchain and lockfiles. The fresh cache is not a successful build or test result until the checks execute. C: free is approximately 28.9 GB and remains below the 32 GiB floor for C: builds; unrelated activity contributed to the decline. The original task target, approximately 25.27 GB apparent, remains entirely intact because live references are not fully visible. Do not claim reclaimed C: space or delete any of it without a fresh per-file journal, live-reference proof and the normal Cargo artifact lock.
+
+A fresh storage preflight identified a new task-owned root `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57`: it was absent, its existing parents were checked for reparse points, and D: had approximately 584 GB free at preflight. Independent review rejected the proposed cache copy because another-profile writer and destination-ancestor rename races were not excluded; the helper was not executed and the original C: cache remains unchanged. The revised approach is one fresh empty D: target, with no snapshot, copy or deletion of the original cache. This is a capacity migration and requires a full rebuild; its performance is unknown. Revalidate absence, ancestors and ownership at creation, then obtain coordinator and independent-review go before serialized checks.
+
+Place major build scratch and isolated test homes under the new root (`target`, `tmp`, `homes`, `evidence`) and set `CARGO_TARGET_DIR`, `TEMP`, `TMP`, `CARGO_BUILD_JOBS=2` and applicable home paths only in task-owned child processes. No global settings changes, installs, toolchain/dependency version changes, new first-party unsafe, installed GUI/game, deployment, remote writes or stopping unrelated processes. The later user-authorized corrective source edits needed to finish checks are recorded below with their own pre-edit contracts and review. Registry locks and small logs may still touch C:; do not claim zero C: writes. Cap the entire D: task root at 64 GiB apparent and retain at least 128 GiB free on D:. Stop only the task-owned producer if either bound or unexpected substantial C: output is observed, preserving partial evidence.
+
+| Requirement | Invariant and proof | Initial status |
+| --- | --- | --- |
+| Safe migration | Fresh path/ownership/reparse/free-space preflight; create one empty D: target; verify C: source untouched and no copy or deletion. | NOT RUN until creation receipts and independent review confirm it. |
+| Isolated execution and budget | One active target and process-local scratch/homes; monitor task root size, D: free space and substantial C: output; stop owned producer at boundary. | NOT RUN until actual execution and resource receipts. |
+| Required verification | After fresh-target proof, run sandbox GREEN, affected CI matrices, full workspace tests and docs, launcher library tests and unmodified `pr_ready` on actual inputs. Preserve full outputs and failures. | NOT RUN. Existing guard five-package plus console FAIL, workspace newline-format FAIL and unavailable parity are separate known statuses until valid new evidence changes them. |
+| Safety and acceptance | No new or moved unsafe, weakened checks or behavior change; preserve independent review. CI execution, OS/runtime, installed GUI/game, production and user acceptance require separate proof. | Full profile BLOCKED by existing unsafe boundaries; CI/runtime/user acceptance NOT RUN. |
+
+### Phase 3 execution evidence received (provisional)
+
+Fresh D: target creation passed ownership/readback review, and an offline build with process-local settings showed rustc output directed to D:. The sandbox regression ran GREEN: one passed, 27 filtered. The earlier copy helper remained unexecuted; the original C: cache was not copied, deleted or reclaimed. At the reported snapshot, the D: task root was approximately 3 GB with more than 580 GB free; these are time-specific measurements.
+
+The first full workspace Clippy run failed on `collapsible_if` in the host. A user-authorized correction used a tuple `if let` compatible with MSRV 1.85 while preserving the predicate and error order. Focused Clippy then reported `items_after_test_module` in host and session; a second authorized correction moved the existing test modules verbatim to file ends. Independent review programmatically compared the modules and remaining source. The coordinator recorded pre-edit contracts for both changes. No lint allowance, weakened check, new unsafe, dependency or feature change was introduced. The actual failing runs are retained; the corrections were not part of the initial no-source-edit assumption.
+
+On integrated source `40be402`, focused friends Clippy passed, network scope tests passed 5/5, relay tests passed 9/9, and the full CI workspace Clippy command passed. Client no-default Clippy, full tests and docs, launcher library tests and unmodified `pr_ready` remain pending; these provisional results do not establish their outcome, actual CI execution or full-profile compliance.
+
+### Phase 3 later verification and bounded corrections (provisional)
+
+On the first full root test attempt, two client tests failed with unknown backtraces. Reusing the matched original binary, serial and parallel reruns each passed all seven relevant tests; a normal full client rerun passed 1,166 with 26 ignored. The initial failure remains unexplained: no source crash was fixed or ruled out. That docs run reported two passed and two ignored, with nine unsupported `cdylib` warnings; launcher library tests passed 125 with two ignored. An earlier no-fail-fast full run recorded 93 result lines, 2,214 passed, four failed and 37 ignored across three targets: the deadline read timed out with Windows 10060, one service path assertion failed and two server-files end-of-line assertions failed.
+
+The three platform-specific assertions were corrected in test code to express explicit OS expectations without normalizing actual values or skipping tests; production behavior was unchanged. Independent review examined the changes, and each of the three focused reruns passed. Formatting those three task-owned files with `newline_style=Windows` was a focused check only; it is not a pass of the canonical repository-wide formatting gate.
+
+The deadline test remains unresolved. A three-second watchdog stopped only its own identified test process after an isolated timeout. A temporary diagnostic, subsequently removed, observed the timer active and `shutdown(Both)` returning OK, while the local read still returned Windows 10060 at approximately 2.01 seconds. The observations rule out the particular missed-timer and shutdown-failure hypotheses investigated; they do not establish an OS root cause or a universal production failure. The final test-only two-second read-timeout guard retained the EOF-zero assertion, 100 ms deadline, less-than-two-second expectation and 300 ms cancelled case, but the bounded test still failed at approximately 2.01 seconds. This is not a production fix; no safe public-contract-preserving correction has been established.
+
+On final code snapshot `2075e3338e20221c0b6c249c52b7f7835da785a5`, both workspace and client-no-default CI Clippy commands passed. Final full runtime tests, docs and unmodified `pr_ready` are still running and are not yet accepted. No source unsafe, dependency, MSRV, feature, lint allowance or test-ignore change was made. The D: verification target remains active; a read-only candidate inventory of approximately 7.65 GiB of `.bin`/`.o` files lacks complete live-reference proof. Preserve it for verification and eventual qualified cleanup; no D: or C: deletion or reclaim has occurred. Future cleanup requires normal Cargo locking, fresh exact-file eligibility and live-reference evidence.
+
+### Phase 3 final consolidated evidence
+
+This table supersedes phase 3's initial and provisional statuses. Behavioral evidence is for source `2075e3338e20221c0b6c249c52b7f7835da785a5`; its independently reviewed format-only successor is `36b89a75996e6810be6a2ed5a89a889297849996`. Earlier attempts remain historical evidence. An independent reviewer found no additional actionable issue in the scoped source diff from `05b5ae7` to this revision. That review does not establish full profile compliance or resolve the deadline behavior.
+
+| Gate | Final result and limits |
+| --- | --- |
+| Fresh D: target | PASS for task-owned creation/readback and actual D: build output. The proposed C: copy was rejected and never executed. The C: original remains retained; no C: or D: deletion or reclaimed space is claimed. |
+| Unsafe enforcement | FAIL: the guard reports five existing unsafe packages and the unsafe console probe. No first-party unsafe was added or moved; dependency and macro internals are not proven unsafe-free. |
+| Clippy | PASS for final workspace all-targets with mods and client all-targets without default features. Standalone telemetry/registry and launcher scoped checks passed on their stated revisions; launcher emitted a dependency future-incompatibility warning. Actual hosted CI execution and branch protection remain NOT RUN. |
+| Root tests | FAIL: final no-fail-fast run reported 93 result blocks, 2,217 passed, one failed and 37 ignored. Three LAN/resource protocol cases returned early with an `ok` harness result and do not establish protocol acceptance; they are separate from the 37 ignored tests. The sole failure is the friends deadline test's Windows 10060 read timeout. No production fix or operating-system root cause is established. The earlier two client crash failures did not reproduce in matched reruns or the later full run, but remain unexplained. |
+| Docs and launcher | PASS: final docs aggregate two passed and two ignored, with nine unsupported `cdylib` warnings. Launcher library tests passed 125 with two ignored. Three strict platform-specific assertion corrections each passed a focused rerun. |
+| Unmodified `pr_ready` | FAIL, exit 1. The guard failed on the six known unsafe boundaries; root formatting reported 1,488 incorrect-newline entries and an actual deadline-test formatting diff at `lib.rs:176`; launcher formatting reported 62 newline entries; root and launcher emitted 384 and 21 stable-option warnings respectively. The selected client-test child became anomalously slow and was stopped by identity guard, so its results are INTERRUPTED and incomplete, not a pass or skip. The readiness summary reported 21 passed; the selection was incomplete. Root Clippy, docs, tokens and launcher Clippy/tests passed. Python ran 379 tests with 11 skipped. Launcher Clippy emitted a future-incompatibility warning. |
+| Parity and runtime | Parity NOT RUN because vanilla resources were unavailable. Installed GUI/game, hosted CI, deployment, production, cross-platform and user acceptance are NOT RUN; no engine runtime acceptance is claimed. |
+
+The full root log is `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\evidence\27-final-root-tests.log`; the readiness output is `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\evidence\29-pr-ready.log`. Independent source review is in the verifier worktree's `.superpowers/sdd/2026-10-27-rust-compliance/phase2-verification.md`. Runner readback after its D: writers exited measured the D: task tree at 29,362,803,306 apparent bytes, D: free at 554,997,710,848 bytes and C: free at 24,310,087,680 bytes. These are time-specific, not reclaim proof. The D: `evidence/ownership.json` records owner, purpose and retention conditions. Both targets remain held until normal Cargo locking, fresh exact-file eligibility and adequate live-reference proof permit any future cleanup.
+
+After `pr_ready` completed, the deadline-test line was wrapped without semantic change in format-only successor `36b89a75996e6810be6a2ed5a89a889297849996`; independent review accepted the exact change. The runtime and Clippy results for `2075e3338` are reused for this semantically identical successor; no runtime or Clippy rerun was performed after the line wrap. A narrow single-file check with `skip_children=true` passed. The canonical root formatting rerun still failed with 1,488 incorrect-newline entries and 384 stable-option warnings, but zero formatting diff headers; evidence is `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\evidence\30-format-results.txt` and `30-root-format.log`. The actual prior readiness failure and its then-present line diff remain recorded above; readiness was not rerun. An initial recursive formatting attempt touched seven clean sibling files; they were restored to Git-filtered HEAD-identical contents before the narrow check, with no permanent semantic changes.
+
+## Phase 4 formatting and deadline evidence
+
+Policy-only commit `e58fd804bd70244b5f7fb2a8bd94b243e7e1da8d` adds nine scoped attribute rules for 1,554 paths, eight already LF. The 1,546 diagnostic first-party CRLF files were normalized to canonical Git LF; independent before/after receipts found zero SHA, index-object or inode mismatches, and no Rust semantic blob changed. Root `cargo fmt --all -- --check` passed with 384 stable-option warnings; launcher `cargo fmt -- --check` passed with 21. The `31*-after` logs are retained in the integration task's existing ignored evidence directory. These passes supersede the earlier formatting failures for this checkout, not the historical `pr_ready` result.
+
+The exact raw backup `31-original-rust.zip` (7.17 MB; 25,628,509 raw bytes) and its manifest/journal are retained by the verification task until acceptance and status repair. Git still reports 1,545 files as modified despite clean object-ID and empty semantic-diff evidence; the worktree is not clean. Automatic approval review rejected the proposed broad `git add --renormalize` because of staging risk; it was not run. No alternative broad staging or status workaround is assumed.
+
+A native standard-library probe tested both a cloned stream and the same `Arc`: shutdown returned OK, but the pending read still produced Windows 10060 at about 1.01 seconds. The cancelled path disconnected without shutdown at approximately 313 ms. These observations do not establish a production fix or OS root cause. A safe public deadline-aware I/O API decision remains pending because the current borrowed raw `TcpStream` contract cannot safely guarantee interruption of a blocked read under the observed behavior. The full interrupted readiness run was not rerun; no complete acceptance is claimed.
+
+The first post-format guard attempt failed because sandboxed Cargo metadata returned Windows error 5 (`32-guard-after-format.log`). The approved outside-sandbox rerun (`32-guard-after-format-approved.log`) exited 1 for exactly the five existing unsafe packages and the unsafe console probe, with zero metadata errors. No unsafe, lint or test weakening, dependency or toolchain change is asserted by this formatting work. Hosted CI, production and user acceptance remain NOT RUN.
+
+## Phase 5: approved owned deadline contract and ledger
+
+The current user approved the public API change and hash-guarded index repair, superseding phase 4's pending decision and the earlier no-API-change boundary. `deadline(TcpStream, Duration) -> io::Result<Deadline>` returns an owning `Read + Write` wrapper with `cancel(self) -> io::Result<TcpStream>`; only the reviewed direct/host/session/crypto handoffs change. Existing unsafe, dependencies, MSRV, target/features and checks remain protected. No unsafe may be added or hidden. The inbound hello, relay/code answer, exchange and encrypted confirmation share one absolute `HANDSHAKE` deadline of 10 seconds.
+
+| Requirement | Invariant → observable check | Initial status / gap |
+| --- | --- | --- |
+| Index integrity | Exact 1,545-path manifest, raw SHA and clean OIDs match; full index bytes unchanged; no semantic Rust staging → `32-reindex-{preflight,command,readback}` | PASS: authorized metadata-only operation, clean index/diff/status before this documentation change. |
+| Deadline and I/O | Monotonic absolute deadline; preserve shorter socket timeouts, interrupts, partial operations and non-deadline errors → trickled read, blocked write and error tests | NOT RUN on new implementation. Timeout maps to EOF only after actual expiry; expired write is `TimedOut`; zero expires and checked-add overflow is `InvalidInput`. |
+| Cancellation and ownership | Active→Released or Expired is serialized; cancel/join once; restore original options fallibly; no expired/raw stream escape while split wrappers remain → race, restore, expiry and release tests | NOT RUN; independent lifecycle/concurrency review required. No lock held across I/O or unbounded resource growth. |
+| Protocol and crypto | One 10-second deadline covers all handshake stages; move cipher/counters without reconfirmation or nonce reset after partial write → post-handoff encrypted payload, authentication and relay tests | NOT RUN; no game/production claim. |
+| Regression and gates | Keep original 100 ms, <2 s, 300 ms, EOF and cancellation assertions except API usage; focused fail-before/fixed-after where practical, both CI Clippy modes, root tests/docs, launcher and unmodified `pr_ready` | NOT RUN on final source. Existing runs 24/27/31 are real prior failure evidence, not a new-test RED. Five unsafe packages and console guard remain FAIL; hosted CI/other OS/game/user acceptance NOT RUN. |
+
+The native lane edits only its assigned Rust files in a separate checkout; integration is serialized after index readback. D: is the sole verification target, with a 64 GiB task cap and 128 GiB free floor; C: builds remain blocked below its 32 GiB floor. No installs, deployment, remote writes, global settings changes, application stops or cleanup are authorized. See the phase 5 design and plan for concrete task boundaries and checks. Preserve existing evidence and retain original C: cache.
+
+### Phase 5 Task 6 review round 1: terminal timeout ruling
+
+Candidate run 35 passed seven deadline tests, but run 36 failed one of 49 friends tests: a stalled writer's cancellation returned `Ok` after an OS send timeout slightly before the absolute deadline. The author proposed retrying an early timeout; candidate 2 was held and not run. Runs `35` and `36` are actual D: evidence, not a final pass.
+
+**Ruling:** actual blocking-socket `TimedOut`/`WouldBlock` makes the owned wrapper Failed/terminal; preserve the original error before expiry and make cancel/reunite fail closed. Do not retry or wait to hide a genuine early error. Timeout-to-EOF is permitted only for a deadline-limited read at or after absolute expiry; elapsed writes return `TimedOut`. The prior assumption that cancellation after a shorter OS timeout may return a usable socket is superseded. Windows documents a connection as indeterminate after a blocking send/receive timeout ([socket options](https://learn.microsoft.com/en-us/windows/win32/winsock/sol-socket-socket-options)); zero bytes reported by Rust `Write` error does not prove safe reuse.
+
+Separate successful cancel/restore without I/O error from shorter-timeout tests, which must preserve the error and reject release. Preserve the original 100 ms, <2 s, 300 ms, EOF and cancellation assertions. If early read timeout breaks original EOF behavior, replan an owned nonblocking controlled logical deadline rather than weakening, ignoring or retrying it. Release must check the clock after worker join and option restoration; split halves must reject cancel and re-split, and no raw socket escapes before both halves are consumed. Document exclusive blocking ownership: no retained clones or external socket-option mutation. Remove the unused `Duration` warning. Task 6 round-one corrections and their regression checks remain OPEN/NOT RUN; no new exception, full compliance or acceptance is implied.
+
+### Phase 5 Task 6 review round 2: targeted I/O evidence
+
+The independent review of all six candidate source files found no additional implementation bug, but spec acceptance is CONDITIONAL because the explicitly required interrupted and partial I/O tests were absent. Round-one fixes addressed terminal timeouts, release-time clock checks, split ownership and timeout restoration, plus the unused-import lint. Actual run 40 passed friends Clippy and all 51 friends tests with none ignored. Those results do not close the two missing targeted proof areas or establish final integrated acceptance.
+
+The approved minimal follow-up is a private operation-callback seam in `Deadline` read/write: production continues to call the real `TcpStream`, while tests combine real network option state with injected interrupted and partial counts/errors. A scripted crypto partial-write-then-error test must exercise the real counter/nonce state and error propagation without retry. No new public API, unsafe, dependency, framework, lint/test weakening or removal of the 51 tests is authorized. Preserve the reviewed base and capture the follow-up delta separately; the D: runner remains serialized. Tests and independent review for this follow-up, final integrated checks and full compliance remain NOT RUN/BLOCKED until actual evidence.
+
+The Microsoft socket-options source linked above was subsequently verified through the official search connector on 2026-10-27: the `SO_RCVTIMEO` and `SO_SNDTIMEO` rows document the indeterminate connection state after blocking timeout. This supersedes the earlier web-tool transport failure; the terminal-timeout ruling is unchanged.
+
+### Phase 5 integration correction: relay deadline caller
+
+Round-two candidate `2df596cc2f31a29e6079deb151c2bbf924adecd6`, integrated at `9d0a6f512bc3ce2160f0b980ae0b084ff3bcb697`, passed 53 friends tests with none ignored and friends all-target Clippy with warnings denied; independent review found the targeted coverage gap addressed and no actionable source issue. Earlier unexecuted fail-before evidence for newly added tests remains unproven; these passes do not retroactively establish it.
+
+The integrated workspace Clippy run failed with `E0308` at `crates/horizon-relay/src/lib.rs:318`: this caller still supplies a borrowed stream to the approved owned deadline API (`43-integration-clippy-mods.log`). This is an actual compile RED. Downstream final checks are NOT RUN.
+
+**Pre-edit relay contract:** Expand the native lane's ownership only to relay `src/lib.rs` and its relevant tests. Audit first-party deadline call sites for other missed callers, then migrate the minimal relay handoff to the owned API. Preserve the relay-specific `config.first_line` deadline, authentication, protocol, errors, fallible timeout restoration, terminal-timeout behavior and all existing assertions. Add no unsafe, feature/MSRV/dependency changes, lint weakening or deleted tests. Run narrow relay tests and Clippy and obtain independent review before integrating; reconcile the call-site audit and actual results with the final integrated diff. No test pass, full integration or runtime acceptance is implied by this contract.
+
+Relay correction review passed both specification and quality review with no actionable finding. The relay's deadline is `config.first_line`, not the friends inbound `HANDSHAKE` constant. The first exact-text edit did not apply because of CRLF, leaving the borrowed call stale; run 45 relay test and Clippy both failed compilation with `E0308` and ran no tests. Readback exposed the failed edit and it was corrected. Run 46 exact-file formatting/check passed with six stable-option warnings each; run 47 passed seven relay library tests and ten tunnel tests, with none failed or ignored, and relay all-target Clippy passed. These are reviewed lane results; source commit and final integrated gates remain pending.
+
+The independently reviewed relay correction `6a8953` is integrated in final source freeze `e27e8eeb182cc9a0086a23ce9e5faff81d585095`; source blobs were checked against the reviewed candidate. The first cherry-pick stopped for missing committer identity. Readback confirmed the expected two staged files and `CHERRY_PICK_HEAD`; a per-command Codex identity and `--continue` completed it without global configuration changes or unrelated staging. Final D: checks are running; their results and independent final acceptance review remain pending.
+
+### Phase 5 final checks in progress
+
+On frozen source `e27e8eeb182cc9a0086a23ce9e5faff81d585095`, run 48 passed both CI Clippy modes. Run 49 using `+stable` reported 93 result groups, 2,203 passed, 26 failed and 37 ignored; the failures were in the mods sandbox because that stable installation lacked the WASM target. Run 50 root docs passed two and ignored two, with nine unsupported `cdylib` warnings. Stable and pinned Rust 1.99.1 report the same rustc commit `58cf8f9c3` and Cargo commit `5f94df478`, but only the pinned installation has the required WASM target. The exact full root command is being rerun with `+1.99.1`; no installation or feature change was made. The stable failure remains historical evidence, and the pinned run is not yet complete.
+
+Unmodified run 51 `pr_ready` exited 1 on the guard's five existing unsafe packages and console probe. The raw Python output reported 379 tests run including 11 skipped (368 non-skipped successes); readiness reported 2,226 selected Rust tests, two documentation tests and 125 launcher tests passing, with two launcher tests ignored. Root and launcher formatting and Clippy passed with 405 stable-option warnings across rustfmt. The pinned sandbox run reported 27 passed and one ignored. Parity was unavailable without vanilla resources. The scope warning reported 63 files, +2,436/−177 and 1,759 code lines. These scoped successes are not full compliance or hosted CI acceptance; the final full-root result is recorded below.
+
+At the reported snapshot, the retained D: task root was 35,745,682,932 apparent bytes, D: free was 547,458,433,024 bytes and C: free was 22,378,528,768 bytes. Both C: and D: task outputs remain retained without cleanup or reclamation because live-reference proof is incomplete. These time-specific figures do not establish allocated or reclaimed space. Final independent review and acceptance remain pending.
+
+### Phase 5 consolidated results
+
+These results supersede the initial phase 5 NOT RUN statuses for frozen source `e27e8eeb182cc9a0086a23ce9e5faff81d585095`; earlier failures and their limitations remain historical evidence above.
+
+| Requirement | Current evidence and status |
+| --- | --- |
+| Index integrity | PASS: hash-guarded metadata-only repair and clean-index readback as recorded above. |
+| Deadline, cancellation, ownership and crypto | Focused friends suite passed 53/53 and relay library/tunnel suites passed 7/7 and 10/10; reviewed targeted interrupted, partial-I/O, terminal timeout and crypto coverage was added. The owned deadline and caller corrections received scoped independent review. The new tests' original fail-before run was not executed and is not claimed. Final independent review passed for the bounded source and verification; full profile acceptance remains blocked. |
+| Clippy and formatting | PASS: both final CI Clippy modes; unmodified `pr_ready` root and launcher formatting/Clippy. Rustfmt emitted 405 stable-option warnings. Launcher Clippy reported a `proc-macro-error2` future-incompatibility warning. This is local Windows execution, not hosted CI. |
+| Full root tests | PASS: run 52, exact full workspace command with installed pinned `+1.99.1`, exit 0; 93 result groups, 2,229 passed, zero failed and 37 ignored, with zero compiler-warning lines. Three LAN/resource protocol cases return early successfully without required vanilla resources; they do not establish end-to-end protocol acceptance and are separate from the ignored count. `52-pinned-workspace-tests.log` is retained in the D: evidence directory. |
+| Docs, launcher and readiness | Docs PASS: two passed, two ignored, nine unsupported `cdylib` warnings. Unmodified `pr_ready` run 51 exited 1: guard failed on the five existing unsafe packages (`horizon-threads`, `horizon-client`, `horizon-server`, `horizon-prepare`, launcher) and the unsafe console probe. Python ran 379 tests, OK (skipped=11); readiness reported 2,226 selected Rust tests and two docs passing; launcher passed 125 with two ignored. Scope warning and all other checks remain in `51-pr-ready.log`. |
+| Full profile and runtime | BLOCKED: five unsafe packages and the console probe lack the required full first-party forbid. Dependency and macro internals are not proven unsafe-free. Parity NOT RUN without vanilla data; hosted CI, other operating systems, installed game, production and user acceptance NOT RUN. No full-profile or end-to-end acceptance is claimed. |
+
+The pinned run does not erase the earlier `+stable` run 49 failure: that installation lacked the WASM target. The four Cargo lockfiles and source remained unchanged during these checks. Final independent review passed for the bounded source and verification; the unsafe guard remains a required failure and full assurance is blocked. Final storage readback is recorded in `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\evidence\ownership.json`: D: task root 35,745,955,752 apparent bytes, D: free 547,463,663,616 bytes and C: free 22,315,466,752 bytes, within the D: 64 GiB task cap and 128 GiB free floor. The writer was released. Allocated size was not measured; no files were deleted and zero space was reclaimed. D: remains held pending unsafe-boundary acceptance and normal artifact-lock, exact-file and live-reference qualification; the original C: target remains held with unknown references.
+
+## Phase 6: remaining unsafe boundaries and dependency-policy decision
+
+Read-only assessments and independent review examined unchanged relevant source at integration baseline `827a2576cc529a1d4770d63bb3039b3c492af42d`. No Rust fix, build, test, native call or dependency change was made in this assessment. Preserve all features, checks and platform source; do not expand or relocate first-party unsafe, create custom wrappers to evade the prohibition, or author negative unsafe fixtures. Any candidate needs its own contract, focused normal/failure tests and independent review before implementation.
+
+| Boundary | Existing behavior and exact source | Evidence gap |
+| --- | --- | --- |
+| `horizon-threads` | `crates/horizon-threads/src/lib.rs:25,36,77,106,112,121`: current-thread Windows priority, Apple QoS and Linux/Android nice/scheduler transitions; native test readbacks at lines 142, 164, 167 and 197. | No equivalent safe existing direct API established for exact calling-thread levels, >4-CPU gate, outcomes and preserved other-platform behavior. `thread-priority` is an unverified published candidate, not a complete package fix. |
+| `horizon-server` | `crates/horizon-server/src/signals.rs:22,30,35` handles Unix signals and Windows console controls, counts repeated requests and ignores registration failure; `src/process.rs:14` chooses `CREATE_NO_WINDOW` based on native console-window presence. | Event coverage, repeated requests, lifecycle, error behavior and console/redirect/ConPTY distinctions need equivalent API and isolated native tests. `winconsole`/`win32console` candidates remain unverified. |
+| `horizon-client` | `examples/model_library_bench.rs:18-49` and `examples/resource_memory.rs:28-55` use `GlobalAlloc` and explicit System allocation to track requested live/peak bytes, reallocations and benchmark outputs. | RSS is not an equivalent metric. Preserve tracking switch, peak/step behavior, failure semantics and fingerprints; no exact safe equivalent established. |
+| `horizon-prepare` | `crates/horizon-prepare/src/files.rs:18,33` attempts Linux FICLONE/macOS clonefile before fallback; Windows takes the unsupported/fallback path. Staging verifies hashes and cleans or publishes resources. | `rustix::fs::ioctl_ficlone` is a policy-dependent Linux candidate with a new direct dependency edge; clone/fallback, errors, cleanup and preserved macOS behavior remain unverified. |
+| Launcher and direct console probe | `launcher/src/console.rs:13-26` attaches to the parent console and restores inherited handles; `launcher/src/titlebar.rs:37-50` uses native macOS appearance and a raw AppKit view; `launcher/tests/support/console_probe.rs:45-57` checks actual console-window visibility. | Preserve handle ownership/failure behavior, AppKit appearance and real window visibility including redirects/ConPTY. Terminal detection is not an equivalent visibility test; direct-rustc coverage remains separately required. |
+
+**Policy decision pending:** The current user did not categorically forbid all new dependencies. Earlier no-new-dependency language was a conservative coordinator assumption, not a verbatim user prohibition. An independently maintained published safe API is not automatically evasion solely because its implementation contains unsafe internals; nevertheless, introducing one specifically to conceal an existing native boundary is in tension with the explicit no-hiding constraint. The decision is whether transparent published safe OS APIs may be considered for particular operations, or whether the dependency graph must remain unchanged. No candidate has established full behavior, platform coverage and policy compliance; none is declared universally impossible or automatically permissible. Prior historical reference candidates were inspected only and not imported.
+
+Evidence is retained in the task's existing ignored reports: `horizon-rust-native/.../phase6-native-assessment.md`, `horizon-rust-bench/.../phase6-client-assessment.md`, `horizon-rust-guard/.../phase6-prepare-coverage-assessment.md`, `horizon-rust-integration/.../phase6-launcher-assessment.md`, and `horizon-rust-verify/.../phase6-independent-blocker-review.md`, each under `.superpowers/sdd/2026-10-27-rust-compliance/`. Their explicit dependency-policy correction addenda supersede contrary blanket language in the historical assessments. The previous run 51 guard failure for these five packages and the console probe is reused historical evidence on unchanged scope, not a fresh guard run. Full first-party forbid remains BLOCKED; fresh candidate tests, actual platform/runtime behavior, CI and user acceptance are NOT RUN.
+
+## Phase 7: approved Windows safe-API assessment and implementation contract
+
+The user has explicitly approved considering transparent independently maintained published safe OS APIs and documenting their internal unsafe. This supersedes phase 6's pending policy question, not the prohibition on custom relocation/evasion or the requirement to preserve behavior and existing checks. Baseline is `6d7037ccf9efe9fca3f0346708c25a3206437ba3`. No dependency, source or runtime acceptance follows from approval alone. Windows is the milestone; Linux is deferred and macOS excluded, while their source/features/checks must remain intact. Candidate packages `thread-priority` 3.1.1, `win32console` 0.1.5 and `winconsole` 0.11.1 require provenance, license, MSRV, implementation and exact behavior review, with only scoped root/launcher lockfile closure changes.
+
+| Requirement | Invariant → observable proof | Initial status |
+| --- | --- | --- |
+| Threads | Calling-thread AboveNormal/Idle, native result and >4 gate preserved; siblings and child inheritance unaffected → actual Windows priority readback, success/failure, real `BackgroundModeEnd` failure on a fresh non-background owned thread and existing tests | NOT RUN. Other-platform source/behavior preserved, not proven by Windows checks. |
+| Server controls/process | Every delivered control request counted, repeated requests and ignored registration failure preserved; native console-window presence drives flags → owned hidden-child tests, redirected/console cases and actual event delivery where safely observable | NOT RUN. No parent-console events or visible windows; unavailable delivery remains an exact gap. |
+| Launcher/probe | Parent attachment, borrowed inherited handle ordering/filter/errors and actual window visibility preserved; automatic `console_probe() -> &'static Path`; fixture in existing workspace with guard/all-target forbid → stdin/out/err, exit 7, hardware and visibility tests | NOT RUN. Terminal detection is not visibility; fixture scope and all targets require proof. |
+| Prepare/client | Any Windows-only enforcement preserves other-platform source; requested-byte allocation metrics, System allocator, failures/peaks/fingerprints stay unchanged → compiler target coverage and read-only published candidate assessment | NOT RUN/BLOCKED until an exact preserving candidate exists. RSS is not an equivalent substitute. |
+| Dependency/safety | Transparent safe API internals documented; no first-party unsafe added or hidden in a custom wrapper; lock changes only scoped closure → manifest/lock/source diff, provenance/license/MSRV and independent review | NOT RUN. Published API use does not make dependency internals unsafe-free. |
+| Verification | Real fail-before where practical, including forbid against existing unsafe (no negative unsafe fixture); focused behavior tests, independent review, final prescribed fmt/Clippy/tests/docs/launcher/pr_ready | NOT RUN on final source. Historical candidate or earlier runs are not new behavioral RED or current acceptance. |
+
+Implementers use separate worktrees and serialize shared root/launcher lock and integration mutations. The existing dirty Windows candidate checkout is read-only reference. No installs, GUI/game runs, focus changes, remote writes, deployment, global config changes or cleanup. Tests may use owned hidden children only; do not send global console events or open visible windows. Preserve D: 64 GiB cap/128 GiB free floor and no C: build below 32 GiB free. Full cross-platform first-party forbid, inactive native unsafe and allocator gaps remain BLOCKED until actually resolved. Hosted CI, other OS, production and user acceptance remain NOT RUN.
+
+Phase 7 preflight ruling: the safe `ThreadId` has a private handle and production uses only the current thread, so an invalid handle is not constructible through the safe API. An invalid-handle test is NOT APPLICABLE; instead test a real `BackgroundModeEnd` failure on a fresh non-background owned thread and boolean propagation. This does not test unrepresentable invalid handles. Do not add unsafe or a public seam to fabricate one. The launcher probe should preferentially be an existing-workspace fixture package, not an ordinary production binary that would change install, default-run or shipping behavior.
+
+The bounded allocator assessment found `stats_alloc` records before success and has no equivalent peak; `tracking-allocator` changes allocation layout/reentrancy; and `alloc_tracker` relative/process peak remains withheld pending equivalence proof. These observations do not authorize a client Rust change or justify repeating tests without changed inputs.
+
+### Phase 7 Task 8: Windows thread priority
+
+Independently reviewed candidate `9565502`, integrated as `dadd5f9fdb1fb8d9f5158cc70d535857c20c8f16`, matched the reviewed three source/manifest/lock files; specification and quality reviews passed. Run 53 exercised forbid against the two existing unsafe sites and failed as expected. Run 55 characterized seven tests successfully; run 58 passed nine tests, zero doc tests and all-target Clippy with warnings denied. Run 56 formatting passed with three stable-option warnings. Run 54 full offline metadata failed on missing `alsa 0.9.1`; run 57 scoped lock validation passed with only `thread-priority 3.1.1` newly introduced and no existing upgrade; root lock changed, and the launcher lock has no threads entry. These are bounded Windows/source results, not a claim that dependency internals are unsafe-free. Declared Rust 1.85, non-Windows runtime and full-package cross-platform forbid were not executed and remain open.
+
+### Phase 7 Task 10A/10B pre-edit boundaries
+
+Task 10A owns launcher production attachment, scoped launcher manifest/lock and Windows forbid attributes on existing Cargo roots, including library, main, build script and integration roots. Preserve `attach_for_cli` result, argument/no-op behavior, macOS source, snapshot of all handles before attach, benign attach failure, null/invalid filtering, borrowed handle order, first restoration OS error and no handle close. `win32console` 0.1.5 is the sole production candidate unless another dependency is independently justified. Characterize the old Windows behavior and real function's normal/failure ordering, then run launcher tests and all-target forbid. This does not cover the old standalone probe.
+
+Task 10B separately addresses the probe: prefer a `publish = false` package in the existing launcher workspace with `default-members = ["."]` and global forbid, preserving the automatic path and all native visibility, stream, exit and hardware assertions. A narrowly scoped helper may use `win-custody` 0.1.1 / `win32job` 2.0.3 only after validation: create suspended, assign before resume, verify empty job and bounded teardown, and capture owned output files. The 32 MiB log value is a monitored STOP threshold with polling and after-exit checks, not a strict quota; fast writers may overshoot. Retain exact outputs and owner receipt until qualified cleanup. Pipe capture was rejected due to inherited-handle EOF/join risks. Do not weaken or remap the guard until actual fixture target and wiring tests prove coverage. The current 10B exact-file contract remains pending preflight; all implementation and final acceptance remain NOT RUN.
+
+### Phase 7 Task 9: Windows server controls and console
+
+Candidate `1856192`, integrated as `878251a42aecf680e674568bf769ca7dc22abd69`, matched the reviewed six files; independent specification and quality reviews passed. Run 59 exercised the existing three unsafe sites under forbid and failed as expected; run 61 passed old hidden-child characterization. Run 65 passed 42 tests and the owned-child check, plus all-target Clippy with warnings denied and unsafe forbidden. Run 63 initially failed Clippy for an unused super import; the final source corrected it using qualified names. Its `--doc` result was NOT APPLICABLE because the package has no library, not a test failure. Run 64 formatting passed with three stable-option warnings; run 60 verified a six-package dependency closure with no upgrades. The raw-u32 safe callback can represent unknown control codes and preserves counting, handler return and ignored registration failure.
+
+Actual OS control-event delivery and registration failure, visible-console/ConPTY cases, non-Windows runtime and execution on the unchanged declared server MSRV 1.90 remain NOT RUN. The Windows target check does not establish complete cross-platform package forbid. Launcher Task 10A keeps the old module/call flow and binary tests; it does not expand the console module's public API, and its standalone probe remains outside its proof.
+
+### Phase 7 Task 10B: probe replacement held
+
+**Ruling: HOLD / BLOCKED, existing source and checks unchanged.** Independent specification and quality review found no already-proven safe drop-in for the standalone direct-rustc probe. A published Cargo dependency is not automatically available to that invocation; terminal detection does not preserve real window visibility. The proposed workspace member and nested Cargo build still need bounded output, owned process-tree teardown and exact executable/guard wiring proof. Temporary inheritable pipe writers expose an unproven bounded-reader-join case; this is a proof gap, not evidence that unrelated inheritance occurred or that safe Rust is universally incapable. File-size polling is only an overshoot-prone stop threshold, not a strict output quota. The existing rustc helper's lifecycle is not validated by retaining it.
+
+No fixture, helper dependency or guard mapping is introduced. Preserve every visibility/stream/exit/hardware assertion and the failing direct-input guard. The bounded review is in the verify lane's `.superpowers/sdd/2026-10-27-rust-compliance/phase7-task10b-blocker-review.md`. Fixture/runtime and full-profile acceptance remain NOT RUN/BLOCKED. Finish the independent authorized replacements instead of expanding into an unverified process-management subsystem.
+
+### Phase 7 Task 10A: Windows launcher attachment
+
+Independently reviewed candidate `4b6c2c817558c329a44f19c81d486dbad369366b` is integrated as `20665e721`; all ten launcher files match the reviewed candidate. Specification and quality reviews passed with no actionable finding. The published `win32console` 0.1.5 shared handles preserve snapshot-before-attach, benign attachment failure, null/invalid filtering, restoration order and first OS-error propagation without closing inherited handles. Dependency-native unsafe remains disclosed; the launcher lock adds only that package using the existing winapi closure, with no upgrade.
+
+Run 66 characterized the original launcher with 165 passed and four ignored and failed the existing Windows unsafe under forbid; it is a compiler RED, not a new behavioral-test RED. Run 67 formatting and run 68 scoped lock resolution passed. Run 69 passed all-target launcher Clippy with warnings denied and unsafe forbidden, and the full `--lib --bins --tests` command passed 169 tests with four ignored (benchmark, network and two interactive graphics cases). The `proc-macro-error2` future-incompatibility warning and package-cache wait remain recorded. Four callback tests exercise the production control function's order and failure propagation; no independently observed fail-before for those new tests is claimed.
+
+The direct-rustc probe remains outside Cargo-root forbid and blocked under Task 10B. Windows attributes are not package-wide cross-platform forbid. Real successful parent-console restoration, actual null/invalid native handles, visible/ConPTY behavior, other OS, declared MSRV, hosted CI and user acceptance remain unverified. Final integrated prescribed checks are pending; scoped review is in the verify lane's `phase7-task10a-review.md`.
+
+### Phase 7 Task 11: Windows prepare roots
+
+Independently reviewed candidate `39c586eab44552be01c9dd9c033509559e5949fc` is integrated as `d784d4447`; all four prepare files match the reviewed candidate. Specification and quality reviews passed. Actual metadata covers the library, binary, Java-selection integration root and host build script; each adds only Windows-scoped forbid. The separate Java probe already has forbid. No dependency, manifest, lock, feature, algorithm or assertion changed. Linux/macOS clone-first source and its unsafe remain intact; a Windows-host build-script result does not prove other hosts.
+
+Run 71 passed all-target prepare Clippy with warnings denied and unsafe forbidden, 38 library tests plus one Java-selection test with none ignored, and the doc-test command with zero tests. Run 70's direct formatter used the wrong edition (2024 versus the package's 2021), so its layout differences are not applicable evidence. Correct-edition run 72 identified baseline checkout CRLF. **Ruling:** normalize only the three affected files to repository-mandated LF, with every canonical original body compared byte-for-byte to baseline Git blobs after removing the added attribute. No import/layout or semantic changes were permitted. Run 73's correct-edition exact-four check passed with 12 stable-option warnings; the earlier failures are retained. Run 71 predates this line-ending-only normalization; final integrated checks will exercise the canonical source. A new behavioral RED is not applicable to attribute-only changes. Full-platform forbid, other OS/MSRV runtime and hosted CI remain unverified/blocked.
+
+### Phase 7 final source freeze
+
+Windows replacements and lint additions are frozen at source commit `d784d4447c0cd59d0b5e144386e8902d63b4ff1d`; root and launcher locks retain only the reviewed closures. Client allocation examples and the standalone console probe remain unchanged explicit blockers. The global guard still requires unconditional full-package coverage and must not be weakened to label Windows-scoped attributes a full pass. Final prescribed checks and whole-phase review are pending. No remote write, install, deployment or game/GUI run was made.
+
+### Phase 7 consolidated verification and limits
+
+These results supersede the final-check pending entries above. Frozen source `d784d4447` plus documentation commit `6c5ecc531af145e7ed5d054c63646f73e95333b5` was checked with installed pinned Rust `1.99.1-x86_64-pc-windows-msvc`. All four lockfile hashes matched before/after, and the final checkout was clean. The correctly quoted tree is `f68ce760f2135740c46686ea82fc7547ce54942c`. Run 74's initial unquoted PowerShell tree-receipt expression failed; later receipts corrected it without changing source or rerunning otherwise valid checks.
+
+| Gate | Actual evidence and result |
+| --- | --- |
+| Formatting and CI Clippy | Run 74 PASS: root and launcher `cargo fmt --all -- --check`; workspace/all-target Clippy with `horizon-client/mods`, and client/all-target Clippy with `--no-default-features`, both `-D warnings`. Root/launcher format invocations emitted 387/408 stable-option warning lines, respectively; no formatter failure. |
+| Full root tests | Run 75 PASS: `cargo test --offline --locked --workspace --lib --bins --tests --no-fail-fast --features horizon-client/mods,horizon-mods/pack`; 93 result groups, 2,236 passed, zero failed, 37 ignored, no compiler-warning lines. Three resource-dependent LAN/protocol cases return early successfully without vanilla data; they are not end-to-end passes and are not part of the ignored count. |
+| Root docs | Run 75 PASS: workspace `--doc` with the same features; two passed, two ignored, nine unsupported cdylib doc-test warnings. |
+| Launcher | Run 76 PASS: full `--lib --bins --tests` 169 passed, zero failed, four ignored; all-target Clippy with `-D warnings -F unsafe_code`. Existing `proc-macro-error2` future-incompatibility warning remains. The standalone direct-rustc probe is not covered by this forbid. |
+| Unmodified readiness | Run 77 **FAIL, exit 1**, solely the safety guard: five packages lack unconditional package-level forbid (threads/client/server/prepare/launcher: 1/20/2/4/7 targets), plus the unsafe direct probe. All other executed readiness checks passed. The tool reports 379 Python passes but suppresses raw unittest output/skips; this is a tool-summary count, not proof of 379 non-skipped tests. Historical run 51 had 379 run including 11 skipped; that historical count is not asserted current. Readiness also reports 2,236 workspace, two doc and 125 launcher-library passes. |
+| Scope and unavailable acceptance | Readiness warns 84 files, +3,083/-235, 2,217 code lines against the original `41af517` base; no PR or external integration is implied. 340 affected parity harnesses NOT RUN without vanilla data. Hosted CI, actual control-event delivery/registration failure, successful native parent-console restoration, visible/ConPTY cases, declared MSRVs, other OS, installed game/production and user acceptance remain NOT RUN. |
+
+The published APIs preserve native boundaries rather than erase dependency unsafe:
+
+| Published dependency | Used safe surface and retained internal boundary |
+| --- | --- |
+| `thread-priority` 3.1.1 | Current-thread priority setters/readback; native Windows thread handle and priority FFI remain inside the published implementation. |
+| `win32console` 0.1.5 | Server console-window presence and launcher shared standard-handle snapshot/attachment/restoration; GetConsoleWindow/GetStdHandle/AttachConsole/SetStdHandle and handle representation remain native dependency boundaries. Launcher borrows shared handles and never closes inherited handles. |
+| `winconsole` 0.11.1 | Server control-handler registration; SetConsoleCtrlHandler callback registration/lifetime and native FFI remain inside the published implementation. |
+
+No first-party native code was copied into a custom dependency. These reviewed additions do not prove the dependency graph unsafe-free. The allocator examples still require an unestablished preserving replacement for requested live/peak bytes, explicit System allocation, reallocations and failures; RSS or changed counters are not substitutes. The probe remains held under Task 10B's independently reviewed proof gap. Preserved non-Windows unsafe prevents unconditional full-package coverage. Thus **full Rust-profile compliance remains BLOCKED**, despite bounded Windows source/compiler/test improvements. Whole-phase independent specification/quality review and final evidence reconciliation passed for the bounded Windows scope, with no actionable finding. This does not resolve the blocked full profile. Review: verify lane `.superpowers/sdd/2026-10-27-rust-compliance/phase7-final-review.md`.
+
+Evidence: `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\evidence\74-final-*.log`, `75-final-root-{test,doc}.log`, `76-final-launcher-{clippy,test}.log`, `77-final-pr-ready.log`, and `ownership.json`. Final writer released: task root 51,046,610,992 apparent bytes, D free 532,966,510,592 bytes and C free 18,039,152,640 bytes. D stays within its 64 GiB cap/128 GiB free floor; C builds remain prohibited below 32 GiB. C free-space changes during checks are unattributed, not evidence of task writes or reclamation. Allocated size was not measured; nothing was deleted and zero bytes were reclaimed. Preserve C cache for unknown references and D outputs/evidence pending exact-file, live-reference and actual build-lock cleanup qualification. No remote writes, installs, deployment, settings changes, application stops or game/GUI runs occurred.
+
+## Phase 8: approved isolated direct-extern probe experiment, 2026-10-28
+
+The user approved a small isolated experiment, not keeping/integrating its prototype or another full workspace rebuild. Baseline `628056fab` production probe, manifests, four locks, tests and guard remained unchanged. Only an ignored scratch package/source and evidence were created under the existing plan workspace. The tiny offline Cargo build took 2.20 seconds and enabled the published `winconsole` 0.11.1 `window` feature; this was not a launcher/workspace build. Complete Cargo JSON identified exactly one matching library artifact, rather than guessing among cached files. Dependency-native GetConsoleWindow/IsWindowVisible unsafe remains inside the published API; first-party prototype code adds forbid and replaces only the visibility boundary.
+
+| Experiment invariant | Actual result and limit |
+| --- | --- |
+| Original compiler RED | Run 78: existing original probe, pinned rustc edition 2021 with `-D warnings -F unsafe_code`, failed on its existing unsafe block. No new unsafe negative fixture was authored. |
+| Exact external library | Run 79: offline scratch build passed; Cargo JSON reports `registry+https://github.com/rust-lang/crates.io-index#winconsole@0.11.1`, lib target, features default/window, and `D:\CodexTaskCaches\horizon-rust-assurance-20261027-01a17d57\target\debug\deps\libwinconsole-29bedc6669688e88.rlib`, SHA-256 `0EDB2B8388CE7BD5C91F7501FCD19FD173281791AE9CD34D3393DAC68FB49473`. No production lock was changed; the scratch graph resolved independently. |
+| Standalone compiler GREEN/failure | Run 80: pinned rustc edition 2021 with `-D warnings -F unsafe_code --extern winconsole=<that exact rlib> -L dependency=<its parent>` compiled the prototype successfully; a deliberately missing library path failed with no fallback. Feature-incompatible or substituted existing artifacts were NOT TESTED. |
+| Preserved prototype behavior | Run 81 passed seven hidden owned-child cases: normal captured stdin/stdout/stderr, failure exit 7, and five simulated hardware responses with timestamp/false/program log entries. Hardware function and main tail after the visibility statement match the original after newline normalization. A reported false visibility value does not establish a null console handle, visible-console or ConPTY semantics. |
+| Independent review and scope | Specification/quality PASS for the isolated experiment; no production readiness claim. Automatic exact-artifact discovery in ordinary launcher Cargo tests, production helper/guard wiring, original launcher integration tests and visible/ConPTY acceptance remain unimplemented/unverified. The probe blocker is narrowed, not closed; global guard and allocator/platform blockers remain unchanged. |
+
+Contract, candidate, report and independent review: ignored `.superpowers/sdd/2026-10-27-rust-compliance/phase8-probe-extern-spike/`. Evidence: D task `evidence/78-original-probe-red.log`, `79-spike-cargo.jsonl`, `79-spike-cargo-stderr.log`, `80-direct-rustc.log`, `81-spike-runtime.log`. The output is owned by this experiment and retained for subsequent artifact-binding design/acceptance; qualified cleanup requires preserving these useful receipts and checking exact output ownership, lifecycle/live references and the shared build lock. No deletion or reclaimed-space claim. Final writer released; C free 24,947,994,624 bytes and D free 532,943,880,192 bytes. No GUI/game run, install, remote write, production integration, global configuration change or full-suite rebuild occurred. The prototype is not a runtime dependency of the project.
+## Phase 9: approved Beyond platform and capability work, 2026-10-28
+
+The owner approved the platform/capability plan and Terra/high worker execution. Base `59fd35819` preserves the prior identity rename and platform decisions. Task 1 candidate `398f20c59d992efb42492882ab5179739ae55e7b` was independently reviewed for specification and quality and integrated as `dc810e287`; exact comparison of all seven owned files passed. This is a bounded removal of three known Apple-native unsafe boundaries, not a repository-wide macOS purge or full Rust compliance.
+
+### Native removal and enforcement
+
+- Removed Apple QoS implementations/readback tests, macOS `clonefile`, and AppKit window-appearance handling. Shared APIs remain; unsupported platforms use explicit fallbacks. Windows implementation/test bodies and Linux priority/reflink/copy-publication bodies are unchanged in the full diff. Linux support remains deferred and its unsafe remains visible.
+- Removed only the obsolete direct Apple `libc` selector and launcher `objc2-app-kit`/`raw-window-handle` edges. The launcher lock removes two direct dependency edges, not transitive package entries; no dependency upgrade or root-lock change occurred.
+- Launcher now has unconditional package `unsafe_code = "forbid"`. Actual metadata identifies library, binary, four integration tests and host build script. The separately compiled `launcher/tests/support/console_probe.rs` is not a Cargo target and remains an explicit unsafe boundary; neither package lint nor Windows compiler success covers it.
+- A new real-repository audit regression observed the missing launcher forbid before the change (run 82), then passed afterward (84). No newly authored unsafe fixture or fabricated Windows behavioral RED was used. The safety module passes 27 tests (99); the unmodified whole-project guard still fails on threads/client/server/prepare package coverage plus the direct probe (100). No guard was weakened.
+- Targeted final locked tests: threads nine, prepare 39, launcher 169 passed; launcher has four ignored cases (benchmark, network, two desktop/graphics). All three all-target Clippy commands passed with warnings denied and unsafe forbidden. Existing `proc-macro-error2 2.0.1` future-incompatibility warning remains. Earlier locked launcher checks (88/91) failed because its scoped lock update was pending; final 95/98 passed. Formatting was corrected at actual editions; stable rustfmt warns about three nightly-only settings.
+
+The independent Task 1 review found no source defect but noted that worker logs lack self-contained command/toolchain/hash/exit headers and some comparison receipts. Coordinator full-diff inspection confirms the unchanged bodies, the exact seven-file integration comparison passed, and a launcher-source scan found no remaining uses of the two removed direct crates. The prior baseline 75/76 logs exist under the D task `evidence/` subdirectory. Final integrated verification below supplies fresh self-contained source/toolchain/lock/command/exit receipts; earlier worker logs alone are not authenticated full-head proof.
+
+### Allocator capability assessment — no product edit
+
+Both allocation examples remain intact. Source examination found existing weaknesses, not permission to preserve defects: relaxed counters and non-atomic reset can misattribute concurrent events; unsigned net deltas can underflow; disabled instrumentation prints zero byte values without establishing an actual measurement; `resource_memory` accepts parseable `ps` stdout without checking exit status and maps other query/parse failures to zero. Requested payload bytes, process RSS and allocator overhead are different quantities. A changed metric must not be presented as equivalent.
+
+Published archives were inspected without executing or installing them:
+
+| Candidate | Exact SHA-256 | Disposition |
+| --- | --- | --- |
+| `tracking-allocator 0.4.0` | `1b61e0cb3385e17df7db29c565b40fd0350dfe8a076c7eea83d416e30cfd0581` | Rejected for this contract: changes allocation layout with padded tracking headers, handles null through allocation failure handling instead of transparent delegation, suppresses reentrant callback events and lacks established equivalent global peak/reset. Tracking-off still wraps layouts. MPL-2.0 obligations would need review if proposed. |
+| `alloc_tracker 0.7.13` | `d7cb8bd914c4463865c3dfcd236f406bf386f5e20efada15feddcd92df5853d2` | Source forwards System layouts and accounts only successful operations, but per-thread/init omissions and approximate process totals do not establish exact global live/peak. First-event initialization allocates, locks a registry and may panic on poisoned lock; optional `panic_on_next_alloc` can panic inside hooks and is not allocator-null injection. Its declared MSRV 1.95 also exceeds the workspace's 1.85. Not approved as a replacement. |
+
+Primary audit locations: `tracking-allocator/src/allocator.rs:23-55,65-147` and `src/lib.rs:73-107,180-225`; `alloc_tracker/src/allocator.rs:54-71,100-195`, `src/counters.rs:18-24,60-120,187-228,279-307`, and `src/lib.rs:84-101`. Exact package-version prefixes are present in the archives. Independent review checked hashes and key source claims. A report correction explicitly reconciled allocation/lock/panic behavior with the proposed hook contract and distinguished panic from null injection; focused re-review approved all corrections. Neither candidate establishes the complete contract. No more candidates, downloads, allocator tests, benchmarks or host-memory exhaustion were undertaken.
+
+#### Proposed preserving contract, not an implementation approval
+
+1. Preserve presence-based `HORIZON_BENCH_COUNT_ALLOCATIONS`, workload order, fingerprints, timings and supported output consumers. Disabled compilation must select a genuinely uninstrumented allocator path, not merely zero-valued counters; any output-format clarification requires an explicit compatibility decision.
+2. A safe observation API would conceptually expose fallible `snapshot()` and `finish_step_and_begin_next()`, returning requested live bytes, absolute per-step requested-live peak and signed net delta. These are requirements, not claims that either library supplies those APIs. Boundaries must be linearizable across events or require a verified quiescent boundary. Successful alloc/zeroed/free/realloc update exact requested sizes; a failed realloc retains the original allocation/accounting; failures must not create false live/peak values. Logical requested-byte peak is not the transient physical old-plus-new allocation footprint.
+3. Track continuously from process start when enabled, including cross-thread frees and surviving allocations. Hooks must not allocate, deadlock through reentrant locks, unwind, panic or perform I/O. Counter overflow/inconsistency, unsupported queries, invalid boundaries and OS-query failure must be explicit, not silent valid zeros. Reporting allocations and measurement-window inclusion must be specified.
+4. Dependency provenance, role, native internals, MSRV, overhead and exact API must be independently reviewed; an existing published unsafe allocator is not automatically a permissible or equivalent solution. No custom unsafe wrapper/evasion is authorized. A concrete approved implementation contract is required before changing either example.
+
+| Requirement | Proposed safe bounded observable test | Current status |
+| --- | --- | --- |
+| Switch/disabled path | Separate fresh-process builds with env absent/present; verify allocator selection/call path, original fingerprint and paired matched-workload latency. | BLOCKED: no established preserving implementation; no benchmark run. |
+| Live/free | Hold/drop small controlled safe objects with known actual allocation events and an isolated measurement window. | BLOCKED: exact safe observer/event isolation unestablished. |
+| Realloc grow/shrink | Safe bounded Vec reserve/shrink with observed old/new layouts; verify live delta and logical peak, including moved realloc. | BLOCKED: no established event observer or guarantee realloc was exercised. |
+| Failed operations | Audited safe deterministic alloc/zeroed/realloc failure injection; verify unchanged counters and retained original on failed realloc. Capacity overflow is a separate public error test, not underlying allocator-null proof. | BLOCKED: no approved safe injection path; panic injection is not a substitute. |
+| Peak/reset/concurrency | Two controlled windows, cross-thread frees, explicit synchronization and bounded interleavings or verified quiescence. | BLOCKED: exact process peak/reset semantics not established; stress alone is not a proof. |
+| Reentrancy/resources/errors | Inspect hooks; safe bounded short-lived threads, overflow/error injection and retained-resource checks. | BLOCKED: complete accounting, lifecycle and safe injection unavailable. |
+| Workload/RSS/platform | Same resource fixtures, output/error/fingerprint comparison, separate explicit Windows RSS mechanism and failures. | NOT RUN; no fixture/game/platform acceptance implied. |
+
+This completes the bounded independently reviewed assessment, not the allocator redesign. Original capabilities have not been deleted or silently reduced; full Rust-profile compliance remains BLOCKED. Existing upstream measurement defects and Windows RSS limitations require future designed fixes, not misleading equivalence claims.
+
+### Final integrated Rust verification
+
+Installed pinned `1.99.1-x86_64-pc-windows-msvc`, source `dc810e2874b39e73f0e665c97d26b97ba093bfc0`, tree `e8876b4f163e227e22ba4847e848595a2a4ec18d`. Root and launcher formatting, both prescribed CI Clippy feature modes, full root tests/docs, and launcher all-target forbid Clippy/full tests completed successfully. All four lock hashes still matched after these commands. Source/configuration, other-OS/MSRV, hosted CI, actual game/device behavior and user acceptance remain distinct.
+
+| Command (all Cargo invocations use the pinned toolchain, offline and locked where supported) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` and launcher `cargo fmt --manifest-path launcher/Cargo.toml --all -- --check` | PASS; 387/408 stable-option warning lines respectively, covering the same three nightly-only options. |
+| `cargo clippy --offline --locked --workspace --all-targets --features horizon-client/mods -- -D warnings` | PASS, no warning lines. |
+| `cargo clippy --offline --locked -p horizon-client --all-targets --no-default-features -- -D warnings` | PASS, no warning lines. |
+| `cargo test --offline --locked --workspace --lib --bins --tests --no-fail-fast --features horizon-client/mods,horizon-mods/pack` | PASS: 93 result groups, 2,236 passed, zero failed, 37 ignored. Resource-dependent tests that return early without vanilla data do not establish end-to-end acceptance. |
+| `cargo test --offline --locked --workspace --doc --features horizon-client/mods,horizon-mods/pack` | PASS: two passed, two ignored; nine unsupported cdylib doc-test warnings. |
+| `cargo clippy --offline --locked --manifest-path launcher/Cargo.toml --all-targets -- -D warnings -F unsafe_code` | PASS; existing `proc-macro-error2` future-incompatibility warning. |
+| `cargo test --offline --locked --manifest-path launcher/Cargo.toml --lib --bins --tests` | PASS: 169 passed, zero failed, four ignored; same dependency warning. |
+| `python -m unittest discover -s tests` | PASS: 380 run, 11 skipped, zero failures. This is 369 non-skipped tests, not 380 executed passes. |
+| Unmodified `python tools/pr_ready.py --base 41af517` | FAIL, exit 1: only the unchanged safety guard fails, on four package-forbid gaps and the standalone probe. Other executed checks pass; missing parity/OS/runtime evidence is not inferred. |
+
+Run 102 logs are self-contained with source/tree/cwd/toolchain/command/exit headers; `102-final-receipt.json` records exact tool versions, executable paths and lock identities. Its scratch wrapper then failed before invoking Python: `Get-Command python` resolved a real installation and Windows Store alias, producing two paths for a scalar executable parameter. No Rust command failed. The matching advanced-function binding failure was reproduced without launching a process; the continuation selects the recorded real Python executable explicitly. Earlier successful Rust commands are not repeated. The runner exited and read-only process checks at `2026-10-28T13:41:38Z` found no compiler producers; the remaining checks wait until the separately requested build-only reservation expires at `2026-10-28T13:51:31.272Z`. No process was stopped, suspended, reprioritized or otherwise changed.
+
+Continuation 103 used the recorded real Python 3.14.7 executable and pinned Rust, starting `2026-10-28T13:51:47Z` after the reserved window. `103-final-receipt.json` records the successful Python command and readiness exit 1, source/tree, complete command arguments, four before/after lock hashes, and completed lifecycle. No lock drift occurred. The raw Python log confirms 380 run/11 skipped; readiness's abbreviated “380 passed” label includes skips and is not adopted as an executed-pass count. Readiness reports 2,236 workspace passes, two doc passes and 125 launcher-library passes; the separate full launcher result above is 169 passes/four ignored. The tool warns about 89 changed files, +3,361/-337 and 2,329 code lines versus the original `41af517` base; that spans prior phases, not just this seven-file source change. Its 340 affected parity harnesses were not run without vanilla data. No PR/release label or integration into main is inferred from tool suggestions.
+
+Full Rust-profile compliance is still BLOCKED: threads/client/server/prepare lack unconditional package-wide forbid; allocator examples and preserved native boundaries remain, and the separate unsafe console probe is not integrated with the approved safe experiment. Hosted CI/branch protection, declared MSRVs, non-Windows runtime, native event/restoration and visible/ConPTY behavior, actual game/graphics/device behavior and user acceptance remain NOT RUN or unverified. Final documentation edits do not change the verified Rust/Python/manifests/locks; they do not require repeating this unchanged pipeline.
+
+Useful evidence: D task `evidence/102-*.log`, `102-final-receipt.json`, `103-python-tests.log`, `103-pr-ready.log`, `103-final-receipt.json`, and `ownership.json`. The small exact published archives, source audit, contracts and reviews remain in this plan's ignored `.superpowers/sdd/2026-10-28-beyond-platform-capabilities/` as audit evidence, not runtime dependencies. JSON parsing, maintained local Markdown links, `git diff --check`, public-tree and reachable-history checks passed; sandbox Python emitted a real-location warning during the separate public-tree checks but both exited 0. No source or guard failure was suppressed.
+
+At final verification release, the task cache contained 59,455,115,922 apparent bytes (within 64 GiB); D free 525,721,477,120 bytes (above 128 GiB floor), C free 142,096,982,016 bytes. Allocated bytes were not measured. Cache owner remains this Rust-assurance task; purpose is compiled verification output and retained acceptance evidence. Pending probe/allocator acceptance and unqualified exact live references/artifact-lock cleanup keep its runtime/package candidates and shared compiler cache held. The older C cache is also held for unknown references. No broad deletion, active-process stop, copy or claimed reclamation occurred; zero bytes reclaimed. Exact fresh empty test-home directories may be removed after producer exit, but shared/mixed roots are not cleanup targets. No game/GUI run, installation, settings/route/model/policy change, main merge, deployment or release occurred.
+
+Final independent whole-plan specification/quality review approved the bounded changes and repair-branch synchronization, with no change-specific Critical/Important finding. Declined runtime/MSRV/CI/parity/allocator judgments remain the explicit gaps above, not extra passes. Closeout removed exactly two verified empty task-owned test-home directories after producer exit (journal `104-empty-home-cleanup.json`); no file bytes or compiler cache were deleted. The first closeout command stopped before mutation on PowerShell's read-only HOME variable; the corrected non-reserved variable completed and readback confirmed both directories absent. The existing ownership receipt now records phase 9 retention. Useful audit evidence and the shared compiler cache remain held, not broadly cleaned.
+
+## Reviewed standalone console integration — 2026-10-28
+
+The [bounded integration contract](superpowers/plans/2026-10-28-console-probe-integration.md) removes one outstanding boundary on this repair branch, not the four remaining package gaps or the allocator blocker. Exact reviewed support/probe/build-script source and the fixture lock were imported from committed Windows candidate `7ecda218e58320fcb40ab4b8abc516e1c44855b4`; none of its dirty TLS locks were copied. The launcher retains its unconditional package forbid and prior macOS removal. The probe now has a separate self-contained Cargo workspace with both package and crate-root unsafe forbids. The audit registers its actual manifest/target; direct `rustc` reintroduction is rejected by ordinary driver discovery rather than exempted.
+
+Existing safe native console/visibility queries, stdin/stdout/stderr, exit 7 and hardware-query protocol are retained. The exact reviewed helper preserves suspended owned process creation, bounded operation/log/teardown, authoritative empty-tree confirmation, checked Cargo artifact identity and lock/identity-qualified cleanup. It does not stop user apps or create a visible console. Failure outputs and copied executable/receipts remain retained; the documented pathname-unlink/no-unrelated-writer limit is not upgraded into atomic same-handle proof.
+
+The launcher lock adds only `winconsole 0.11.1`, `win-custody 0.1.1`, `win32job 2.0.3`, `fs2 0.4.3` and `file-id 0.2.3` plus launcher edges. No existing package was upgraded or removed. All five cached published archives match exact lock checksums; all 16 previously reviewed used-path source bindings were independently rehashed. This reuses the earlier dependency/lifecycle review after binding, not a new blanket dependency-soundness claim.
+
+| Requirement / gate | Actual composed-branch result |
+| --- | --- |
+| Audit regression | RED: five expected failures in 13 tests with an owned writable TEMP; GREEN: all 40 audit tests pass. Initial sandbox cleanup/access failures are preserved separately, not presented as semantic RED. |
+| Root, launcher and standalone fixture format | PASS. Existing stable-rustfmt warnings remain: 387/408/3 lines respectively, for the same three nightly-only options. |
+| Standalone fixture all-target check, guarded all-target Clippy and tests | PASS under locked/offline Rust 1.99.1. Fixture has zero unit tests; native behavior is exercised by launcher integration tests, not inferred from zero tests. |
+| Launcher all-target check and Clippy `-D warnings -F unsafe_code` | PASS. Existing `proc-macro-error2 2.0.1` future-incompatibility warning remains. |
+| Full launcher `--lib --bins --tests` | PASS: 197 passed, zero failed, four original ignores. Native hidden protocol, owned-tree termination/failure retention, real output locks and modeled legacy-layout cases execute. |
+| Launcher docs | PASS with zero doctests. |
+| Full Python suite | PASS: 384 run, 11 skipped, zero failures (373 non-skipped successes). |
+| Unmodified `python tools/check_rust_safety.py` | FAIL, exit 1: exactly four original package-wide forbid gaps, in threads/client/server/prepare. Standalone console gap is gone. |
+| Unmodified `python tools/pr_ready.py --base 41af517` | FAIL, exit 1, only the retained safety guard. Other selected checks pass, including workspace tests reported as 2,236, two doc tests and 125 launcher-library tests. Its abbreviated “384 passed” includes Python skips and is not adopted as an executed-pass count. |
+
+The readiness scope advisory covers 94 files against the old original base, not just this integration; 340 affected parity harnesses remain unrun without vanilla data. Root Rust sources/manifests/lock are unchanged by this slice; prior full raw root logs remain applicable, and readiness executed its selected root checks again. No further unchanged build is needed merely for the final documentation update.
+
+Exact commands, cwd, pinned toolchain, five before/after lock hashes and completed lifecycle (`2026-10-28T14:25:01Z`–`14:32:48Z`) are in this worktree's ignored `.superpowers/sdd/2026-10-28-console-probe-integration/verification-receipt.json` and named complete logs. `composition-proof.json` records exact imports, dependency closure and provenance. Independent review read the full scoped delta and completed native evidence, found no change-specific Critical/Important issue, and approved a scoped repair-branch commit after this ledger update—not main promotion. The reviewer observed readiness before its final result; the coordinator read the complete finished readiness log and records its actual failure above.
+
+Full-profile compliance is still BLOCKED. The four package gaps, allocator examples/seven resource unsafe diagnostics on the Windows candidate, actual Rust 1.85, positive attached-console/ConPTY/restoration, other Windows versions/filesystems, interactive GPU/startup ignores, game/resources/parity, hosted source CI and user acceptance remain separate unresolved boundaries. No check/assertion/ignore/security policy was weakened, and no main/upstream/release/deployment action occurred. PSScriptAnalyzer is unavailable; Pester is installed but no project Pester suite covers the ignored scratch runner. No tooling was installed.
+
+
+## October 28 preserving Windows composition (supersedes source-branch-only status)
+
+The preserving candidate composes reviewed assurance commit `e9a1f94a8` onto
+Windows/information candidate `7ecda218e`. Later Windows friends/relay implementations
+and tests, model allocator implementation/build switch/tests, Windows server native
+implementations/tests, launcher console implementation/tests, and safe console
+fixture/helper/build script/lock remain the Windows candidate versions. Only the
+reviewed Apple removal is applied to the retained thread implementation; all Windows
+test assertions remain. The maintained upstream catalogue is retained unchanged.
+
+The proposed unconditional `horizon-server` package forbid is **BLOCKED**, not
+implemented: its retained `src/signals.rs` Unix `install()` still calls
+`libc::signal` inside first-party unsafe at line 22. This is deferred Linux
+capability, not permission to delete it, relocate it, or weaken the unconditional
+package audit. The safe Windows path does not prove package-wide safety. Therefore
+four package gaps remain: threads, client, prepare, and server. The seven existing
+resource-example unsafe diagnostics remain unresolved. No server guard regression
+RED/GREEN is claimed because the precondition for adding unconditional forbid failed.
+
+The launcher and standalone console fixture retain unconditional package forbid.
+This is source composition only, not full root/client/launcher, native positive
+console, OS-generated event, MSRV, other-OS, game/parity or user acceptance.
+See the current task acceptance records for actual commands and gate results.
+
+
+## Current combined-candidate supersession — 2026-10-28
+
+The owner's authorized Rust-compliance coordination supplied reviewed immutable prepare702d9ee1/thread90f36ea00 fixes and policy60aa89dce459d02af71916be217f057a84ccc995. This candidate now pins Rust1.99.1 and requires it for all37first-party packages across five workspaces; older compiler support is explicitly superseded, not an outstanding minimum-version test. Dependencies/features/editions and the retained Windows capabilities were not weakened. Product/package unsafe and all required mechanical/native/CI gates remain mandatory.
+
+The unmodified current guard fails on client22auditedtargets and server2targets: these two package-wide enforcement gaps remain, rather than the older four-package count. Full allocator diagnostics and Unix signal publication/error/restoration semantics remain protected and unresolved; no dirty peer signal implementation is imported or claimed accepted.
+
+Current combined-source Python verification:389run/11skips/0fail. All five formatter scopes pass after canonicalLF-only standalone repairs (18files normalizedHEADidentical, two conflictingattributes removed). Final core/shader all-target Clippy `--keep-going -- -Dwarnings -Funsafe_code` passes; full lib/bin/integration tests160passed/0failed/3originalignores; docs0tests and focusedformat pass. Exact source/config/lock bindings remain unchanged through that lifecycle. Independent review of the latest four probe sites and newline/attribute repairs approves their exact source/local-gate boundary with no actionable finding; whole-candidate approval remains NO. Original failed readiness and intermediateClippy logs remain retained.
+
+Final broad combined readiness remains BLOCKED:64GiBsharedtargetcap has388,867,867bytes headroom, but observedbroadgrowth plus256MiBreserve requires6,127,567,589more bytes. No capraise/cacheduplication/foreigndeletion is inferred. Older/mixed caches, runtime binaries, evidence and the independently changed-hash object remain held. Compiler lane was naturally released to the Rust peer; no overlapping compiler/cleanup is permitted. Local receipt names are `current-source-checks.json`, `standalone-newline-proof.json`, `standalone-newline-checks.json`, `core-lint4-checks.json` and `compiler-peer-release-final-core.json` under `.superpowers/sdd/2026-10-28-combined-acceptance/`. Main/push/CI/nativeUnix/game/parity/user acceptance remains separate and unpassed.
+
+
+## New shared Git integrity hold — 2026-10-28
+
+The Rust peer's final signal candidate remains uncommitted: its precommit history gate failed with inflate errors and Git child Windows status3221225477. Parent bounded read-only diagnosis confirms a shared pack integrity failure in `horizon/.git/objects/pack/pack-32e84c5daa6d9921f941153bf6a772bc9c101e20.pack` (185,051,390bytes). Streamed bodySHA1 `87b3f3843ef98f8a44a22915ab5e4a4c62a3c9a7` differs from stored trailer `32e84c5daa6d9921f941153bf6a772bc9c101e20`; rawSHA256 `9693e929ffbc981639c3f7931cc6ad98979d4ee1ee2367bf6d2a22c0c79146f0`. Metadata remained unchanged through that read. Read-only `git verify-pack` fails on its index: bad object at offset19801806, inflate returned-3. The three other pack files match their trailers and pass verify-pack. This is evidence of this pack's integrity failure, not proof of a hardware/OS cause or exhaustive loose-object health.
+
+All shared Git staging/commits/imports/fetch/repair/gc/repack/prune/ref changes are held; worktrees, objects and existing evidence are preserved. No repair or object replacement is authorized by this diagnostic. The new signal candidate's reported Windows49tests and Python389run/11skips remain source-bound local results; native Unix acceptance and the inherited fullClippy failure remain separate. No immutable signal handoff exists yet. Earlier history PASS is superseded for current acceptance, not erased. Main promotion remains forbidden.
+
+Read-only evidence: combined candidate `.superpowers/sdd/2026-10-28-combined-acceptance/git-integrity-pack-hashes.json` and `git-integrity-verify-pack-{0..3}.{stdout,stderr}.log`; peer full original failure at its existing full-compliance scratch `server-signal-precommit-history-failure.txt`. Source-level documentation records do not modify the shared Git object store. A consequential preservation-first repair requires an explicit bounded decision before mutation.
+
+
+## Authorized Git repair acceptance — 2026-10-28
+
+The owner directly authorized preservation-first repair in Check Rust rules compliance; the coordinator verified the actual human message before acting as sole shared-Git writer. This supersedes the preceding active Git integrity hold, not its failure evidence or other mandatory gates.
+
+An isolated mirror from authenticated/admin-verified `SlaVKsVolks/Beyond` passed full `git fsck` and contained **all58,154objects** indexed by the damaged pack. The verified replacement pack20bc2e9a96abe236e27283707a5b44eed18a5087 was installed, and the original damaged pack/index/reverse-index plus dependent stale multi-pack-index were quarantined, not deleted. Exact before-images/hashes and refs/reflogs/worktree administration/indexes were preserved first. The initial MIDX guard stopped before any shared mutation; the bounded plan then explicitly preserved/rebuilt/verified that derived index and refreshed server-info.
+
+Final acceptance: shared `git fsck --full --no-dangling --no-progress` PASS with no diagnostics; rebuilt MIDX verification PASS; **both** unmodified combined-candidate and Rust-peer `tools/check_public_tree.py --history` PASS with clean stderr. All58,154original pack objects are readable in the repaired store. All20registered worktrees and67,513cached/untracked/missing-file bindings retain identical membership and bytes;502original metadata bindings, including refs/reflogs/indexes/merge heads, match their before-images. Main remains652c0b1f978640d7489f76e5442b9b5de866f435. No reset/clean/ref/history rewrite, working-file overwrite, push, deployment, CI change or D compiler-cache write occurred.
+
+Repair acceptance/evidence is outside every Git worktree at `.git-repair-20261028/repair-acceptance.json`, SHA25657238b46459a54eb11741b02d0622acf1fbd3df68120da3b5d6d94c7187db60e, with its bound preservation/coverage/journal/check/readback records and complete logs. Exact damaged rollback/metadata copies and isolated verified recovery provenance total583,446,380apparent bytes; owner is this repair, retained until immutable signal handoff and overall candidate acceptance/rollback decision. They are not runtime dependencies or broad cleanup targets. The corruption cause remains unknown; no hardware or universal future-integrity claim is made.
+
+The explicit source/Git-writer freeze was released only after that readback. The Rust peer may resume its own reviewed signal-candidate commit/handoff; parent documentation edits after this boundary are intentional record changes, not repair drift. Signal/native/allocator, final broad storage/readiness, whole-candidate/CI/parity gates remain unresolved. No main approval follows from repository repair.
+
+
+## Post-repair signal composition and combined verification — 2026-10-28
+
+Reviewed immutable signal source d74814f1281b5663f11f9ce38dc83cfe828e8adb is now composed into the isolated candidate, not main. The exact12path union preserves current Windows native function bytes, stronger owned-console/stdio/exit7/visibility/registration assertions and Windows window feature, while adding every peer observer/callback assertion and the four reviewed signal files. Two cached published signal archives match their lock checksums; all old root package records except the admitted server dependency edges, prior TLS/model/Mac union and four secondary locks are preserved. Independent composition review approves this exact source boundary with no critical/important defect; it explicitly rejects complete local-gate or main approval.
+
+Actual server enforcement regression:31tests, exactly one expected server-manifest FAIL before import; all31PASS after. Unmodified full safety guard now fails **only on client22targets**, not server. Actual combined Windows server all-target check PASS; server tests **52passed/0failed/0ignored** plus owned-console protocol PASS (`console=false;visible=false;registered=true`). The Unix fixture explicitly reports NOT RUN on Windows. Strict all-target Clippy with warnings denied/unsafe forbidden remains **FAIL101:50inherited horizon-world library collapsible_if diagnostics**; complete diagnostics are retained, not suppressed. The server doc command failed101 because the package has no library target: doc coverage is NOT APPLICABLE to that binary-only layout, not passing doctests.
+
+The subsequent complete source-only suite passes **390Python run/11skipped/0failures** and formatting across all five workspaces. Public-tree/diff checks pass with existing nightly-only rustfmt and Git newline-conversion warnings retained. Five lock hashes and all bound Rust/config/test source hashes stayed unchanged through their completed lifecycles. No world source was edited merely to hide the newly exposed diagnostics.
+
+Next broad verification remains storage-admission BLOCKED: target68,416,908,190apparent bytes under64GiBcap68,719,476,736 leaves302,568,546bytes; observed prior broad growth plus reserve requires6,213,866,910additional bytes. The Rust cache owner is performing bounded READ-ONLY qualification of six already-identified older incremental roots against exclusive completed producer receipts, with no deletion yet authorized by a name/age inference. Parent has released the serialized cleanup-qualification lane and performs no D writes. No cap increase, second cache or broad deletion is inferred. Expanded world lint edits await an admissible verification/resource plan; allocator preserving-safe-API and native Unix/actual shutdown/whole-candidate/hostedCI/parity gates remain open.
+
+Exact evidence: combined scratch `signal-import-{preflight,proof}.json`, `signal-import-repair.diff`, `signal-audit-{red,green}.log`, `signal-combined-checks.json` and complete named logs, `signal-world-clippy-diagnostics.json` (all50), `signal-final-source-checks.json`, and `signal-composition-review.md` SHA256f6a32a5112c89ddf4e44f61d9fe1ea3e5a8ffcccc6e1242a9f5d62cbf9978e08. The prior Git-repair receipt remains accepted at its exact pre-source-change preservation boundary. Main remains652c0b1; no push/deployment/main promotion occurred.
+
+
+## Qualified cache cleanup and remaining budget boundary — 2026-10-28
+
+The original cache owner qualified only nine single-link compiler metadata `.bin` files from three precisely source/UTC-bound completed producer sessions, not the roughly7.34GB gross size of the six investigated roots. The coordinator checked exact catalogue SHA30fc5a176971fa810786db36b0fe5450629aa28682c933e34aac2c2b3b73037a, both source-pinned receipt hashes/windows and available commit/tree, and read the unchanged normal-lock/deny-write/hash/same-handle-deletion mechanism before approving the exact nine-file subset.
+
+Initial execution precheck stopped before any journal/deletion because one prior core metadata session was already absent. The exact53old-held-path readback recorded52present plus1ABSENT_BEFORE; cause remains unknown, and later compiler retirement is only a hypothesis. The revised explicit baseline preserved those actual states rather than falsely claiming53present. The changed-hash client object remains present/HOLD. No extra deletion target was authorized by this reconciliation.
+
+The naturally completed retry journal has nine verified-intent/completed-absence pairs. Actual reclamation: **1,234,169,856allocated bytes**,1,234,158,058logical bytes; observed D-volume free-space gain exactly1,234,169,856bytes, freeafter513,184,739,328. All832held states and39selected source/lock/runtime/library bindings were unchanged. No directory, source, lockfile, library, executable, symbol, evidence or held object was removed; no compiler/Git/CI/main operation occurred. Normal Cargo output lock and cleanup lease were released. Removing these rebuildable caches can make a future matching build slower.
+
+Current target:67,182,750,132apparent bytes under unchanged64GiBcap68,719,476,736; headroom1,536,726,604bytes. Broad next-stage observed-growth-plus-reserve estimate6,516,435,456bytes still lacks **4,979,708,852bytes**. Older unbound/multilink artifacts remain HOLD; no further broad investigation/deletion or second cache is proposed. A bounded64->72GiB D-cache budget increase with the128GiBdrive-free floor is proposed for the owner's decision, **not approved or applied**. No world-source edits or broad build will bypass that resource boundary. Allocator/native/strictClippy/client/whole-candidate gates remain open regardless of the budget decision.
+
+Peer complete records: existing full-compliance scratch `older-incremental-{qualification,cleanup-precheck-failure,cleanup-retry-result}.json`, retry-before and the18row retry-journal; parent `older-held-path-reconciliation.json` and `older-cleanup-accepted-readback.json`. ResultSHA54f9ad1598a86d00cf62e9522399fb97d6dd90bbe36a5c6ae7f526a391288f64 binds the exact successful subset. Initial failure and all held states remain preserved as evidence, not hidden or attributed to the nine-file cleanup.
+
+
+## Reviewed Windows lifecycle handoff - composition boundary
+
+The Phase15 record below belongs specifically to the separate immutable peer commit db752d5fa0a87de0034af5c58f511626caf9b6dc (base 5dd5b331a3b57351e9008f79ccdd3e32205082cf), not to this combined working tree. Its49-test/ownbranchlint/guard numbers describe that peer boundary only. The current combined candidate preserves52unit tests and63reviewed lint repairs; its new fixture import must receive fresh composition/runtime checks before those peer results can be claimed here. All earlier combined records remain historical, including the superseded64GiB proposal and50world-lint failure.
+
+## Phase 15: actual owned Windows signal lifecycle, 2026-10-28
+
+The separate additive Windows acceptance fixture now exercises the normal `horizon-server` executable and production supervisor with an owned fake engine. No production Rust, existing test/assertion/lint, dependency or lockfile was changed. The server manifest adds one harness-free test target; the safe Rust fixture explicitly forbids unsafe code. A dev-only Python controller creates a hidden suspended console broker, assigns its exact non-inheritable no-breakaway job before resume, and delivers CTRL_BREAK only to the exact new nonzero server process group. Root-held engine identity is verified against that exact job through a bounded private handshake before delivery; the controller never attaches to or signals foreign consoles. The fake starts no real game, assets, world, GUI or audio, and all run data uses fresh owned folders through the repository's canonical `lab.game_env` path.
+
+Actual Windows evidence on this candidate: first-event graceful case confirms the forwarded readiness probe, stop acknowledgment, engine exit 0 and server exit 0 with no forced branch. A separate stubborn case stays alive after the first acknowledgment; the second OS event reaches the production forced branch, engine exits 1 and server exits 0 in 0.103442 seconds after that event, well before the normal 120-second timeout. The stubborn fake cannot self-exit on repeated stop or stdin EOF. Outcomes are recorded before any controller cleanup. Both root receipts independently confirm naturally stopped job descendants, reaped processes, successful handle closes and no cleanup-induced shutdown. This proves the specified fake-engine supervisor lifecycle, not real-game persistence/saving, every control-event class, embedding or universal race/leak freedom.
+
+Pre-edit independent design review and pre-launch safety review found two real fixture issues: membership in any job was insufficient, and failed status queries could skip termination of an unassigned suspended broker. Exact-root-job verification and independent handle-owned cleanup were implemented with controlled boundary regressions; their initial RED is explicitly a missing-new-interface failure, not a claimed preexisting production-defect reproduction. Atomic owned PID publication also removes a partial-read race. An initial full Python run failed the two existing game-home policy tests; the actual controller was corrected to call `lab.game_env`, without exemptions or weakened assertions. Final full Python suite: 399 tests run, 11 skipped, 0 failed. Native OS fault-injection for the cleanup errors remains unrun; the failure regressions are pure boundary tests.
+
+Required all-target Windows check passes. Full server tests pass 49/49 with 0 ignores, plus the existing owned-console fixture and new actual OS lifecycle fixture. All five formatting scopes pass with the three existing nightly-only-option warnings; server package-forbid audit covers all four actual Cargo targets. Public-tree, reachable-history and diff checks pass. All five lock hashes match the prior successful signal baseline, and manifest semantic comparison allows only the new test declaration. Full required Clippy still fails on the same three inherited `horizon-core` collapsible-if diagnostics in this separate checkout; the integration chat has independently reviewed fixes in its different composition. Supplementary server all-target `--no-deps -Dwarnings -Funsafe_code` passes, but does not replace that failed full gate. The full safety guard still fails on threads’ one and client’s twenty targets in this checkout; those gaps are not hidden by the new fixture's enforcement.
+
+Complete source/lock-bound commands, raw logs and native identities/outcomes/cleanup receipts remain in the existing ignored full-compliance artifact directory, indexed by `windows-lifecycle-acceptance.json`. Its final independent reviewer recomputed all 51 bound source/input/lock hashes against all four Cargo receipts with zero mismatches and found no Critical, Important or Minor code defect blocking a scoped candidate commit/handoff. The final ledger supersedes its historical NOT RUN/preflight notes without rewriting failures. Native Unix remains explicitly NOT RUN on Windows; hosted CI/protection, allocator implementation, resource-dependent gameplay and final combined readiness remain open. Main was not changed, and no push, deployment, install, hosted job or foreign app control occurred.
+
+The integration owner's reviewed exact 78-new-metadata-file closeout recovered 437,491,768 Windows-allocated bytes (separate volume gain 437,489,664 bytes). No older HOLD/session files, runtime binaries, symbols or evidence were removed. A later nine-directory stat-size representation discrepancy is preserved with both readonly probes, not called a data mutation or silently erased. All new Cargo stages were freshly admitted under the owner's existing 72 GiB full-task-root cap, 128 GiB D free-space floor and 32 GiB C free-space floor, with a 128 MiB estimate plus 256 MiB reserve and at most two build jobs; each completed naturally with unchanged sources/locks and no resource stop. Final sampled root after server tests: 76,662,185,055 bytes. Shared cache binaries/symbols and the small private fixture homes remain owned evidence for pending reviewed composition verification; retire only after that acceptance and exact no-live-reference qualification. No cap increase or broad cleanup was inferred.
+
+
+Combined import status: source composition complete; new fixture native/check/readiness acceptance PENDING at this edit. Five composed locks and production handler/supervisor source are untouched. Main remains held. See windows-lifecycle-composition-contract.md and named completed receipts in the existing local acceptance evidence; these are not runtime dependencies.
+
+
+## Reviewed allocator peer source record - conditional combined composition
+
+The following Phase16 record belongs to immutable peer 7fdea8978c0df7372b87531f30e9cd45dbde113b, not to this combined checkout. Its branch-local counts, original native receipts and pending gates are not combined acceptance. The parent preserves its already accepted shared safe model allocator, mode/failure fixtures and build-script forbid/cfg bytes instead of replacing them with peer globals; the exact fork is initially used by resource_memory. Prior47lint repairs and stronger lock graph remain owned combined facts. Final fork test-log success was superseded by an incomplete job-drain lifecycle (accepted=false); Linux run40814464187 failed workflow validation before jobs. Both remain failures, not waived. A separately reviewed workflow-only correction and final source-bound native/combined checks are still required.
+
+
+
+## Scoped mod-alloc fork evaluation — 2026-10-29 (not integrated)
+
+Explicit owner approval permits the maintained fork, frozen upstream unsafe
+adapter bodies, no unsafe in new code, preserved diagnostics and main held until
+all required gates pass. Scoped Linux verification is separately approved; no
+release/deployment/protection/default-branch change follows. Owned branch is
+`repair/rust-integration-2026-10-27`, base `db752d5fa0a87de0034af5c58f511626caf9b6dc`.
+Main and the parent's divergent combined checkout remain untouched. See
+`third_party/mod-alloc/FORK.md` for owned/frozen boundaries and measurement limits.
+
+| Gate | Actual evidence and remaining limit |
+| --- | --- |
+| Design | Independent exact-state/true-null design reviews conditionally accept safe path; no universal deadlock/starvation claim. |
+| Frozen boundary | Both full unsafe lib items byte-equal; other upstream modules hash-bound including inactive unsafe. Registered audit RED5fail/GREEN6pass, no blanket exclusion. |
+| Core behavior | Literal counter regressions RED3/GREEN3. Expanded exact library8pass includes retained/lower peak, signed negative delta, logical realloc, transactional/sticky failure, six two-pair schedules and concurrent snapshot/finish stress. Finite stress is not Loom/Kani proof. |
+| True null | Actual alloc/zeroed/realloc null via published pinned Chaos INSIDE frozen adapter. Metadata/layout/new-size, old realloc data/pointer/capacity and unchanged counters pass. Realloc selected index1of2 is explicitly truncated, not exhaustive; no OS exhaustion claim. |
+| Windows native | System fresh-process test1pass covers alloc/zeroed/grow/shrink/data/cross-thread free and alloc/free during TLS destruction after another destructor. First-expression startup probe observed no pre-main allocation and exited101; native pre-main coverage NOT established. |
+| Fork compiler | Default30tests including9doctests pass; default all-target and targeted exact Clippy -Dwarnings pass. Exact doctest0tests, not behavior proof. Legacy symbolicate/DHAT all-target check passes with missing-frame-pointer warning; no tracing runtime claim. |
+| Client integration | Both unsafe example allocators replaced by safe exact calls; unconditional client package forbid preserves Clippy policy. All-target check/guardedClippy pending. Root lock adds only mod-alloc path package/direct edge, no upgrades. Rootguard FAILS only pre-existing horizon-threads1target on THIS base, client gap absent. Compose parent's later thread fix, not silent source copy. |
+| Real workloads | Loader/held-object/shared-library/timing/fingerprint source preserved. Actual absence/empty/0/1 mode, prepared-data workload/fingerprint/overhead and parent parity gates NOT RUN. RSS remains separate with existing OS command behavior. |
+| Linux/CI | New exact-repair-branch-only, contents:read, bounded hosted workflow prepared; review/push/run pending. No existing workflow/protection/default change. Initial deliberate exactbranch push avoids manual-dispatch bootstrap through main. |
+| Final acceptance | Final Python/format/public-tree/source review/immutable handoff pending. Main held; missing native/workload/combined gates not passed. |
+
+Evidence: existing ignored `.superpowers/sdd/2026-10-28-full-rust-compliance/allocator-*`
+logs/receipts and `allocator-fork-contract.md`. Single existing Dtaskroot72GiB cap,
+C>=32GiB/D>=128GiB floors,max2jobs,serialized sourcebound stages. No newcache,
+capincrease,oldHOLDdelete,user-data use or reclaim claim.
+
+
+### Fork review and resource execution update — 2026-10-29
+
+Independent whole-candidate review found no allocator correctness/safety defect
+or scoped-workflow authority issue. Its Important checkout reproducibility issue
+was reproduced with actual Git autocrlf smudge (raw frozen lib bytes changed),
+then fixed by a narrowly scoped `.gitattributes` LF rule. All55 fork files were
+freshly exported through Git's checkout filter with autocrlf=true; raw bytes and
+registered audit then passed. The fixed-size AtomicU8 error latch is an explicit
+accepted refinement of the initial AtomicU64-counter contract. Live legacy docs
+now distinguish the fork's1.99.1 floor from the historical upstream1.75 claim.
+
+Full Python:405run/11skip/0fail. All six format scopes passed, with existing
+stable/nightly-option warnings recorded in allocator-format-results.json;
+public-tree/history/diff checks passed. These are not client compiler or native
+workload acceptance. Default fork aggregate is30, not the provisional31 (21normal
+plus9doctests). A bounded actual-System concurrent allocation/free/window round
+was added to the native fixture to cover the contract's real-adapter stress row;
+its amended compiler/native execution remains pending, not inherited from the
+prior native1pass receipt. Other unchanged behavior results remain scoped to
+their actual inputs.
+
+The client all-target check log reached compiler Finished, but its supervisor
+raced process completion after detecting the72GiB cap breach; taskkill returned
+128 and no successful lifecycle receipt exists. It is NOT PASS. The measured
+root was77,766,536,797bytes against77,309,411,328 cap. No compiler remained.
+Independent review qualified only117 newly born clientcheck .bin metadata files;
+753,625,880allocated bytes were removed with normal Cargo locking, same-handle
+identity/hash/unlink and fsynced intent/outcome journal. All832 old HOLD states
+and782 source/runtime bindings were unchanged; lock release was explicitly
+confirmed after checked unlock/close. An additional independently qualified
+parent-owned single completed-producer dep-graph.bin removed148,037,632allocated
+bytes, preserving832HOLD states and2920 source/runtime bindings. No directories,
+images/symbols/rlibs/rmeta/source or broader inventory were deleted. Fresh stage
+admission and a race-safe supervisor are still required; cleanup is not a build
+or main-acceptance result. No cache cap, old HOLD or default configuration changed.
+
+
+Combined allocator import: SOURCE ONLY, runtime/check/main acceptance PENDING. Existing shared model signed-delta correction remains a bounded TDD follow-on; no current model/helper/fixture/build bytes changed by this import. The invalid initial workflow was deliberately not imported. No D compiler/runtime/cache operation or main/index/ref mutation occurred.
+
+
+## Combined acceptance readback — 2026-10-29: main still held
+
+This combined-checkout record supersedes only its earlier PENDING status, not the
+historical peer results, failures or proof limits above. The scoped maintained
+allocator fork and frozen upstream adapter boundary remain as explicitly approved;
+no unsafe-free dependency-internals claim follows from the first-party guard.
+
+| Gate | Actual combined result and limit |
+| --- | --- |
+| Signed model reporting | PASS: both original reporting sites use the existing shared safe helper, widening both operands before subtraction. The actual 41-byte release reproduced the old underflow (exit 101), then passed as -41 with tracking or 0 with true System/off. Real Cargo absent/empty/0/1 modes passed against one unchanged 3,552-input boundary; original normal, cross-thread and separate failure coverage was preserved. Native 32-bit execution was not run. |
+| Reporting consumer | PASS: the minimal optional-sign parser correction preserves fields, alternating runs, warmups and medians. Two real-driver boundary regressions cover 24 output rows, ten-sample summaries and nonzero child exit. External process/wait is controlled in these tests; this is not an actual resource-backed benchmark or RSS measurement. Existing float precision is unchanged. |
+| Independent review | The compliance chat independently reviewed the exact five signed-report files, their final hashes, genuine RED/GREEN logs and all four source-bound runtime receipts; no blocking defect was found. Optional pinned exact-owned compiler-helper retirement in those four runs is recorded as retirement, not natural drainage. |
+| Windows client | PASS: `cargo check --offline --locked -p horizon-client --all-targets` (50.65 s); `cargo clippy --offline --locked -p horizon-client --all-targets -- -Dwarnings -Funsafe_code` (32.28 s). Both completed with compiler/broker exit 0, unchanged inputs, natural job drainage and confirmed teardown under the approved cap. |
+| Full readiness: completed stages | `python -B tools/pr_ready.py --base origin/main --verbose` completed public-tree, Rust safety-manifest audit, Python tests (408 run, 11 skipped, no failures), root formatting and strict workspace all-target Clippy. Formatting retains three inherited stable-versus-nightly option warnings; these were not suppressed or changed. |
+| Full readiness: failed lifecycle | FAIL, not accepted: workspace Rust test compilation crossed the 72 GiB task-root cap after 252.98 s. Sampled root was 77,476,049,521 bytes versus 77,309,411,328 allowed. The exact owned job was stopped (broker 92, compiler result unavailable), source bindings remained unchanged, and teardown was confirmed. This attempt did not complete Rust tests, doc tests or launcher stages; previous scoped results remain historical, not a substitute for final combined acceptance. No unchanged retry or budget increase was attempted. |
+| Scoped Linux | PASS only for reviewed immutable peer revision `698a7b256c0321aaf541ae8c6d57580105f0943f`, hosted run `40821753160`: 57 server unit tests, nine native signal cases, strict all-target Clippy, exact allocator/null/System lifecycle and startup checks. This does not establish the combined candidate's full hosted verify or game acceptance. |
+| Real game and benchmark workloads | BLOCKED: this isolated candidate lacks the owner's prepared Minecraft 26.3 inputs. The affected vanilla parity harnesses, prepared-resource model fingerprint/timing workload and applicable gameplay acceptance remain NOT RUN. No downloaded substitute, stubbed result or reduced functionality was used to close this gap. |
+| Final hosted integration | NOT RUN for the current combined candidate. Required hosted verify/protection and final combined acceptance are not inferred from the smaller scoped Linux job. Main remains at `652c0b1f978640d7489f76e5442b9b5de866f435`; no merge, release or deployment occurred. |
+
+The independently reviewed exact cleanup retired only 34 newly born orphan
+`.rcgu.o` compiler objects from that stopped job. Native single-link identity,
+creation/modification window, content hash and no-live-reference checks were
+revalidated under the normal Cargo lock, with same-handle unlink and a durable
+68-row journal. Execution exited 0; separate lock-release readback confirmed
+success with no errors. All 951 older protected states and 3,596 source/runtime
+bindings were preserved. No executable, symbol, archive, metadata, directory,
+older HOLD, source or evidence file was removed.
+
+Measured reclaimed allocation was 302,534,656 bytes; the separately measured
+volume-free change was also 302,534,656 bytes. Final full task-root size was
+77,173,599,102 bytes, leaving 135,812,226 bytes (129.52 MiB) below the unchanged
+cap; D free space was 503,509,581,824 bytes. This is insufficient for fresh build
+admission plus the existing reserve. The parent retains sole ownership of the
+shared cache for pending verification; binaries, symbols, archives, metadata and
+older holds remain retained until acceptance and exact no-live-reference cleanup
+qualification. A revised authorized storage plan is required before another build.
+
+Detailed evidence remains in the existing local combined-acceptance directory:
+`model-signed-final-matrix.json`, `allocator-owned-parent-client-check-final.json`,
+`allocator-owned-parent-client-clippy-final.json`, `parent-ready-final-analysis.json`,
+`linux-698a7-readback.json` and `ready-cap-cleanup-accepted.json`, with their full
+logs, source maps, sealed cleanup manifest, journal and lock-release receipt.
+These evidence files are not product runtime dependencies.
+
+
+## Approved 80 GiB continuation — 2026-10-29
+
+The owner explicitly raised this same isolated task-cache cap to **80 GiB
+(85,899,345,920 bytes)** and requested completion without weakening functionality,
+Rust rules or the all-gates-before-main boundary. D>=128 GiB and C>=32 GiB free,
+maximum two build jobs, the 128 MiB reserve, 600-second stage deadline, source
+binding and exact-owned process/lifecycle safeguards remain unchanged. No second
+cache, relocated temporary budget or broader cleanup was introduced. Independent
+review and AST comparison confirmed only the approved cap, a fresh identical
+full-readiness command alias and its existing conservative 6,516,435,456-byte
+estimate changed in the local controller; its nine gate regressions passed.
+
+**Full local readiness PASS:** the fresh admitted `parent-ready-80-final` attempt
+completed `python -B tools/pr_ready.py --base origin/main --verbose` in 405.03 s,
+compiler and broker exit 0, unchanged 3,552 inputs, no boundary violations,
+natural process drainage and confirmed teardown. All 12 actual local stages
+passed: public tree, Rust safety audit, Python (408 run/11 skipped/no failures),
+root formatting and workspace all-target Clippy, workspace tests (2,264 passed,
+37 inherited ignores), doc tests (2 passed/2 ignores), token generation check,
+launcher formatting/Clippy and launcher tests (125 passed/2 inherited ignores).
+Full UTF-8 output and every ignored test/warning are retained. Stable/nightly
+rustfmt-option, unsupported cdylib-doctest and `proc-macro-error2` future-compiler
+warnings remain visible; no checks or ignores were weakened. Maximum sampled
+root was 80,221,127,603 bytes; final root was 80,122,240,852 bytes, below the
+approved cap. This supersedes the local test/docs/launcher BLOCKED status above,
+not the genuine failed 72-GiB lifecycle or the remaining resource/hosted gaps.
+
+**Amended Windows allocator lifecycle PASS:** the identical registered scoped
+command ran eight exact-counter/real-null unit tests and the actual System
+cross-thread/TLS/concurrent lifecycle fixture successfully on this combined
+source. The `fork-exact-diagnostic` receipt is accepted (compiler/broker 0,
+unchanged inputs, natural drainage, confirmed teardown, 4.09 s). The earlier
+`fork-exact-final` attempt was blocked before owned compilation by transient
+foreign Cargo processes; its failed prestart receipt remains unchanged. Those
+processes were already absent before identity readback and were never stopped.
+The fresh diagnostic alias is the same actual test command, not weaker tests.
+
+A fresh-context independent whole-candidate source review verified every bound
+changed path twice, the complete 643,590-byte main-to-candidate diff, substantive
+Rust/Python/manifest/workflow changes, new native fixtures, contracts and complete
+launcher ownership/cleanup support. It found no Critical, Important or in-scope
+Minor defect and assessed the candidate as source-ready for the next authorized
+acceptance/publication step, **not main-ready**. No reviewer compilation, tests,
+source/index/ref changes or native-app operations occurred.
+
+Review rulings and remaining gates:
+- Prepared Minecraft 26.3 inputs are still absent: 340 affected vanilla parity
+  harnesses, real resource-backed model fingerprint/timing and applicable game
+  acceptance remain BLOCKED/NOT RUN. A local readiness exit 0 does not waive them.
+- Current combined hosted verification remains required. Fresh read-only GitHub
+  evidence confirms main requires strict `verify` from the GitHub Actions app,
+  including administrators, with force-push/deletion disabled. No protection was
+  changed; this configuration proof is not execution proof.
+- Other architectures/native 32-bit execution and comprehensive Linux support
+  are not claimed by these Windows results or the scoped reviewed Linux run.
+- Registered frozen dependency source and finite stress do not prove universal
+  dependency safety, deadlock/leak freedom or allocator latency bounds.
+- The owning Deadline API intentionally requires ownership rather than Copy;
+  all observed repository callers are migrated. No stable external-consumer API
+  promise or external consumers were supplied; unobserved consumers may require
+  migration, and no compatibility proof for them is claimed.
+- New engine/NPC voice implementation and internal product-name migration remain
+  excluded from this repair. No feature is silently substituted to close a gate.
+
+Detailed receipts, complete logs, full warning/ignore lists, review bindings and
+budget proof remain in the same local combined-acceptance evidence directory.
+Main is still held. Reviewed candidate publication for required CI is distinct
+from a main merge, release, deployment or upstream submission.

@@ -87,10 +87,10 @@ pub(crate) fn mark_loaded(data: &mut ProcessorData, loaded: &dyn Fn(&str) -> boo
     fn walk(v: &Value, out: &mut BTreeSet<String>) {
         match v {
             Value::Object(o) => {
-                if o.get("processor_type").and_then(Value::as_str) == Some(MODULAR_COMPAT) {
-                    if let Some(id) = o.get("modid").and_then(Value::as_str) {
-                        out.insert(id.to_owned());
-                    }
+                if o.get("processor_type").and_then(Value::as_str) == Some(MODULAR_COMPAT)
+                    && let Some(id) = o.get("modid").and_then(Value::as_str)
+                {
+                    out.insert(id.to_owned());
                 }
                 o.values().for_each(|v| walk(v, out));
             }

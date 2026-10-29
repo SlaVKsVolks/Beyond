@@ -24,12 +24,14 @@ fn main() -> horizon_client::Result<()> {
     let assets = Assets::load(root)?;
     let render = assets.reload(root)?;
     let block_ms = start.elapsed().as_secs_f64() * 1000.;
-    let block_retained = model_bench_allocator::live_bytes() - initial;
+    let block_retained =
+        model_bench_allocator::retained_delta(model_bench_allocator::live_bytes(), initial);
     let start_items = Instant::now();
     let items = ItemRenderer::load_with_library(root, render.model_library.clone())?;
     let item_ms = start_items.elapsed().as_secs_f64() * 1000.;
     let total_ms = start.elapsed().as_secs_f64() * 1000.;
-    let retained = model_bench_allocator::live_bytes() - initial;
+    let retained =
+        model_bench_allocator::retained_delta(model_bench_allocator::live_bytes(), initial);
     println!(
         "block_ms={block_ms:.3} item_ms={item_ms:.3} total_ms={total_ms:.3} retained_bytes={retained} block_retained_bytes={block_retained}"
     );

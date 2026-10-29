@@ -14,7 +14,7 @@ queue (the hub, or `/suggest` on Discord) rather than to issues, which are for b
 
 ## Build it
 
-You need Rust (stable), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers (`libasound2-dev libudev-dev`).
+You need Rust 1.99.1 (selected by `rust-toolchain.toml`; older compilers are unsupported), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers (`libasound2-dev libudev-dev`).
 Horizon never downloads the game: it prepares its resources from your own copy of Minecraft 26.3, as described in
 [Build from source](README.md#build-from-source).
 

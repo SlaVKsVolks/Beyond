@@ -3,7 +3,7 @@ name = "horizon-server-files"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version = "1.99.1"
 description = "The dedicated server's vanilla files: server.properties, eula.txt, ops, whitelist and bans, and account lookups"
 
 [dependencies]
@@ -16,5 +16,11 @@ log = "0.4"
 base64 = "0.22"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

@@ -59,7 +59,7 @@ def main():
         for path in sources
         if path.is_file()
     }
-    environment = dict(os.environ, RUSTUP_TOOLCHAIN='stable')
+    environment = dict(os.environ, RUSTUP_TOOLCHAIN='1.99.1')
     subprocess.run(['cargo', 'build', '--locked', '-p', 'horizon-client'],
                    cwd=lab.ROOT, env=environment, check=True, timeout=3600)
     metadata = json.loads(subprocess.check_output(

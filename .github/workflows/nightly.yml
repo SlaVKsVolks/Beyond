@@ -57,6 +57,8 @@ jobs:
           # Keeps .local/ (parity state, probe builds, the previous audit) and target/.
           clean: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
         if: steps.when.outputs.run == 'true'
       - name: Tools from the runner
         if: steps.when.outputs.run == 'true'

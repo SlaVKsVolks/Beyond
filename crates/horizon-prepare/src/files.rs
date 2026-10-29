@@ -9,33 +9,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "sparc", target_arch = "sparc64"))
+    ))]
     {
-        use std::os::fd::AsRawFd;
         let source = fs::File::open(from)?;
         let target = fs::File::create(to)?;
-        // SAFETY: FICLONE takes a source fd, both descriptors stay open for the call.
-        if unsafe { libc::ioctl(target.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
+        rustix::fs::ioctl_ficlone(&target, &source).map_err(Into::into)
     }
-    #[cfg(target_os = "macos")]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let path = |p: &Path| {
-            CString::new(p.as_os_str().as_bytes())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
-        };
-        let (source, target) = (path(from)?, path(to)?);
-        // SAFETY: both paths are valid NUL-terminated strings for the duration of the call.
-        if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    // rustix does not expose FICLONE on SPARC; the caller uses an independent copy.
+    #[cfg(any(
+        not(target_os = "linux"),
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))]
     {
         let _ = (from, to);
         Err(io::ErrorKind::Unsupported.into())

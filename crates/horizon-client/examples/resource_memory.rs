@@ -14,45 +14,11 @@ use horizon_client::{
     light::LightTables, mesher::MeshTables, models, motion::MotionResources,
     vanillagen::VanillaTerrain,
 };
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
-};
 use std::{path::PathBuf, process::Command};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-struct Counting;
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-// SAFETY: forwards to the system allocator, only counting sizes.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
-            let now = LIVE.fetch_add(layout.size(), Relaxed) + layout.size();
-            PEAK.fetch_max(now, Relaxed);
-        }
-        p
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size(), Relaxed);
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
-        let p = unsafe { System.realloc(ptr, layout, new) };
-        if !p.is_null() {
-            if new >= layout.size() {
-                let now = LIVE.fetch_add(new - layout.size(), Relaxed) + new - layout.size();
-                PEAK.fetch_max(now, Relaxed);
-            } else {
-                LIVE.fetch_sub(layout.size() - new, Relaxed);
-            }
-        }
-        p
-    }
-}
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: mod_alloc::ModAlloc = mod_alloc::ModAlloc::new();
 const MB: f64 = 1048576.0;
 
 fn rss_mb() -> f64 {
@@ -75,27 +41,29 @@ fn main() -> Result<()> {
         "{:<24} {:>8} {:>8} {:>10} {:>8}",
         "step", "live MB", "+live", "step peak", "RSS MB"
     );
-    let mut last = 0usize;
-    let mut step = |name: &str| {
-        let live = LIVE.load(Relaxed);
-        let peak = PEAK.swap(live, Relaxed);
+    let mut last = 0u64;
+    let mut step = |name: &str| -> Result<()> {
+        let snapshot = ALLOC.finish_window()?;
+        let live = snapshot.current_bytes;
+        let peak = snapshot.peak_bytes;
         println!(
             "{name:<24} {:>8.0} {:>+8.0} {:>10.0} {:>8.0}",
             live as f64 / MB,
-            (live as f64 - last as f64) / MB,
+            (i128::from(live) - i128::from(last)) as f64 / MB,
             peak as f64 / MB,
             rss_mb()
         );
         last = live;
+        Ok(())
     };
-    step("start");
+    step("start")?;
     let registry = horizon_world::level::data::load_registry(&root)?;
-    step("registry alone");
+    step("registry alone")?;
     drop(registry);
-    step("registry dropped");
+    step("registry dropped")?;
     let assets = Assets::load(&root)?;
     let render = assets.reload(&root)?;
-    step("assets");
+    step("assets")?;
     println!(
         "  sprites: {} layers of {}px, {:.0} MB of pixels",
         render.texture_layers,
@@ -104,32 +72,32 @@ fn main() -> Result<()> {
     );
     // The game decodes gameplay facts once for both tables (BlockFacts::load_pair).
     let (facts, behaviours) = BlockFacts::load_pair(&root, assets.registry)?;
-    step("block facts+behaviours");
+    step("block facts+behaviours")?;
     let items = Items::load(&root, assets.registry, &facts)?;
-    step("items");
+    step("items")?;
     let recipes = Recipes::load(&root, &items)?;
-    step("recipes");
+    step("recipes")?;
     let biomes = Biomes::load(&root)?;
-    step("biomes");
+    step("biomes")?;
     let light = LightTables::load(&root, assets.registry, &facts)?;
-    step("light tables");
+    step("light tables")?;
     let tables = MeshTables::new(
         &assets,
         &render,
         &facts,
         models::load_visibility(&root, assets.registry)?,
     )?;
-    step("mesh tables");
+    step("mesh tables")?;
     let collision = collisions::load(&root, assets.registry)?;
-    step("collision");
+    step("collision")?;
     let motion = MotionResources::load_with_facts(&root, &assets, &facts)?;
-    step("motion");
+    step("motion")?;
     let terrain = VanillaTerrain::new(&root.join("worldgen"), assets.registry, &biomes, 1234)?;
-    step("worldgen");
+    step("worldgen")?;
     println!(
         "{} block states; live {:.0} MB, RSS {:.0} MB",
         facts.states.len(),
-        LIVE.load(Relaxed) as f64 / MB,
+        ALLOC.try_snapshot()?.current_bytes as f64 / MB,
         rss_mb()
     );
     if let Ok(out) = Command::new("footprint")
