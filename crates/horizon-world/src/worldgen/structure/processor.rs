@@ -1457,11 +1457,11 @@ fn process_infos<W: PlacementContext>(
                 before.clone(),
                 settings,
             )?;
-            if let Some(altered) = altered {
-                if altered != before {
-                    replaced += 1;
-                    processed[index] = altered;
-                }
+            if let Some(altered) = altered
+                && altered != before
+            {
+                replaced += 1;
+                processed[index] = altered;
             }
         }
     }
