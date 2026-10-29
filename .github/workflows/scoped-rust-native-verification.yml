@@ -77,6 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --offline --locked -p horizon-server --test unix_signals
+          cargo test --offline --locked -p horizon-server --bin horizon-server
           cargo clippy --offline --locked -p horizon-server --all-targets -- -D warnings -F unsafe_code
           git diff --exit-code -- Cargo.lock third_party/mod-alloc/Cargo.lock
           df -h . "$RUNNER_TEMP"

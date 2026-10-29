@@ -1,5 +1,9 @@
+#[cfg(not(unix))]
 #[path = "pending.rs"]
 mod production;
+
+#[cfg(unix)]
+use super::pending as production;
 
 use production::{Pending, publish};
 
