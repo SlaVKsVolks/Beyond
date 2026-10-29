@@ -728,3 +728,80 @@ Detailed receipts, complete logs, full warning/ignore lists, review bindings and
 budget proof remain in the same local combined-acceptance evidence directory.
 Main is still held. Reviewed candidate publication for required CI is distinct
 from a main merge, release, deployment or upstream submission.
+
+
+## Scoped scheduling dependency repair — 2026-10-29
+
+The owner explicitly authorized the narrowly maintained `thread-priority` 3.1.1
+fork, separately from the allocator exception: preserve every upstream unsafe
+body byte-for-byte, add only safe code, preserve functionality and keep main held
+until every required gate passes. Windows remains the product milestone; Linux
+product support is deferred, **not** its existing mandatory hosted checks.
+
+**Fail-before:** required hosted verification of `62477ade` failed the old Idle
+selection test. The reviewed tests-only follow-up `36bb98a0` first hit an incorrect
+Unix test constructor (run 40865003291). That compilation failure is retained and
+is **not runtime RED**. Corrected tests-only `043ad509` produced genuine native RED
+in run **40866196745**: the Idle hint rejected nice 10, helper Idle fallback failed,
+and the corrected 40-value/static-priority test failed. Full logs are preserved;
+no Unix test, platform capability or required check was removed to hide them.
+
+**Minimal source repair:** the safe caller validates the complete nice range
+`[-20, 19]` and passes `ThreadPriority::Min`, because Idle's static
+`sched_priority` is zero, not inherited niceness. The fork adds one exact
+`#[forbid(unsafe_code)]` block after the original successful
+`pthread_setschedparam` error check and before its `setpriority` call. Only
+Linux/Android Idle returns there, preventing an unintended niceness reset.
+Every original unsafe body, other policy/error path, Windows source and legacy
+upstream test is unchanged. The first-party caller has unconditional crate-root
+and package-wide unsafe forbids. False remains best-effort, not atomic rollback.
+
+**Provenance/enforcement:** the published MIT archive matches the fresh crates.io
+3.1.1 checksum
+`8d2e834949be5111506bb252643498af1514f600d9e1dceedaa42afae155b67f`.
+All 19 published files reconstruct byte-exact after removing only the registered
+safe block and appended standalone workspace marker. `FORK.json` and
+`tools/thread_priority_integrity.py` bind every file, including inactive platform
+code, tests, manifest, lockfile and license. Missing forbid, unknown files and
+registry/manifest/original-source drift fail closed. The exact fork LF attribute
+preserves hashes on Windows; all 21 fork files match their staged blobs.
+Independent full-diff/archive review approved this boundary, not dependency safety.
+
+**Local focused acceptance PASS on reviewed source:** actual vendored-library
+Windows compilation passed all eight native/normal/failure/isolation tests with
+no ignores. Strict all-target Clippy with `-Dwarnings -Funsafe_code` passed.
+Compiler/broker exits were zero, bound inputs unchanged, process drainage natural
+and teardown confirmed. Root and standalone-fork format checks passed, retaining
+411 and 12 stable/nightly-option warning lines respectively.
+
+The first full Python run genuinely failed its all-local-package MSRV assertion:
+it treated the frozen dependency's published 1.85 floor as first-party 1.99.1.
+The reviewed correction recognizes **only** the exact resolved fork path **after**
+its integrity audit succeeds. Every other package still requires 1.99.1 and all
+local-dependency floor comparisons remain. No manifest, compiler, version,
+feature or lock graph changed for this verification correction. The fresh full
+suite passed **420 tests run, 11 inherited skips, no failures**, including all 12
+current-seal integrity regressions. Actual Rust 1.85 execution is not claimed;
+the installed pinned 1.99.1 toolchain was used. Failed runs remain preserved.
+
+Remaining gates and proof limits at this record:
+- Fixed-after native Linux and exact final-candidate hosted `verify`: **NOT RUN**
+  pending reviewed candidate publication. A conditional negative-nice test's
+  return is **not** native negative-niceness acceptance; it remains NOT RUN unless
+  a legitimately inherited negative value is observed. No privilege escalation.
+- New full local readiness: **BLOCKED** by the unchanged 80 GiB task-cache cap.
+  The last focused lifecycle ended at 82,338,243,517 bytes. The unchanged
+  6,516,435,456-byte full-run estimate plus 134,217,728-byte reserve does not fit.
+  No estimate reduction, cap increase, second cache, temporary-budget escape or
+  deletion of protected source/runtime/PDB/HOLD state was performed. D>=128 GiB,
+  C>=32 GiB, two jobs, 600 seconds, fresh admission and native lifecycle guards
+  remain mandatory. An 84 GiB proposal is **not authorization**.
+- Owner-provided Minecraft 26.3 inputs remain missing. Affected vanilla parity,
+  model fingerprint/timing and applicable game acceptance are BLOCKED/NOT RUN.
+- Android/native 32-bit, universal dependency safety/correctness, latency bounds,
+  deployment and installed-game/user acceptance are not established here.
+
+Full local logs, native RED, failed attempts, contracts, archive comparisons,
+independent-review bindings and the storage proposal remain in the existing local
+combined-acceptance evidence directory. Source-ready and focused passes are not
+main-ready. No release, deployment or main promotion is authorized by this record.

@@ -15,3 +15,5 @@ docs/api/*-reference.md text eol=lf
 # The registered mod-alloc fork hashes ORIGINAL LF bytes, including inactive
 # unsafe sources. Never let Windows autocrlf change this reviewed boundary.
 /third_party/mod-alloc/** text eol=lf
+# Preserve the second explicitly registered published-source boundary byte-exact.
+/third_party/thread-priority/** text eol=lf

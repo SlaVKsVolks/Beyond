@@ -1,0 +1,11 @@
+target/
+**/*.rs.bk
+Cargo.lock
+**/*.swo
+**/*.swp
+.idea/
+Vagrantfile
+.vagrant/
+.vscode/
+__pycache__/
+*.pyc

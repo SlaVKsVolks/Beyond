@@ -8,10 +8,10 @@ description = "Scheduling hints for the game's threads with native platform prio
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 rustix = { version = "=1.1.5", default-features = false, features = ["process", "std"] }
-thread-priority = "=3.1.1"
+thread-priority = { version = "=3.1.1", path = "../../third_party/thread-priority" }
 
 [target.'cfg(windows)'.dependencies]
-thread-priority = "=3.1.1"
+thread-priority = { version = "=3.1.1", path = "../../third_party/thread-priority" }
 
 [lints.rust]
 unsafe_code = "forbid"

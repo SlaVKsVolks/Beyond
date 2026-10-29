@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKSPACES = {Path('Cargo.toml'), Path('launcher/Cargo.toml'),
               Path('launcher/tests/support/console-probe/Cargo.toml'),
               Path('crates/horizon-telemetry-server/Cargo.toml'),
-              Path('crates/horizon-mod-registry/Cargo.toml'), Path('third_party/mod-alloc/Cargo.toml')}
+              Path('crates/horizon-mod-registry/Cargo.toml'), Path('third_party/mod-alloc/Cargo.toml'), Path('third_party/thread-priority/Cargo.toml')}
 SKIP_DIRS = {Path('.git'), Path('.local'), Path('.superpowers'), Path('target'),
              Path('third_party/wgpu-hal'), Path('launcher/target'),
              Path('crates/horizon-telemetry-server/target'), Path('crates/horizon-mod-registry/target')}
@@ -171,6 +171,13 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
                     else:
                         from mod_alloc_integrity import audit_mod_alloc
                     issues.extend(audit_mod_alloc(root))
+                    continue
+                if path == Path('third_party/thread-priority/Cargo.toml'):
+                    if __package__:
+                        from .thread_priority_integrity import audit_thread_priority
+                    else:
+                        from thread_priority_integrity import audit_thread_priority
+                    issues.extend(audit_thread_priority(root))
                     continue
                 rust = table(lints.get('rust'))
                 if not forbid(rust.get('unsafe_code')):

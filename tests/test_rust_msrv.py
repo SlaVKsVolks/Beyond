@@ -6,6 +6,7 @@ import subprocess
 import unittest
 
 from tools.check_rust_safety import WORKSPACES
+from tools.thread_priority_integrity import audit_thread_priority
 
 
 class RepositoryRustMsrvTests(unittest.TestCase):
@@ -28,10 +29,15 @@ class RepositoryRustMsrvTests(unittest.TestCase):
                 )
 
         checked = 0
-        for name, minimum, dependencies in packages.values():
+        for package_path, (name, minimum, dependencies) in packages.items():
+            expected = '1.99.1'
+            if package_path == (root / 'third_party/thread-priority').resolve():
+                # Only this integrity-bound published dependency retains its original floor.
+                self.assertEqual(audit_thread_priority(root), [])
+                expected = '1.85'
             with self.subTest(package=name):
-                self.assertEqual(minimum, '1.99.1',
-                                 f'{name} must require the project Rust 1.99.1 minimum')
+                self.assertEqual(minimum, expected,
+                                 f'{name} must retain its reviewed Rust {expected} minimum')
             if minimum is None:
                 continue  # The policy assertion above already reports this invalid package.
             # Cargo normalizes two- and three-component Rust floors.

@@ -1,7 +1,7 @@
-#![cfg_attr(windows, forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 
 //! Scheduling hints for the game's threads. Windows, Linux and Android use
-//! published safe priority APIs, whose native internals remain dependencies.
+//! reviewed safe priority APIs, whose frozen native internals remain dependencies.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -94,14 +94,9 @@ fn behind() -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn idle_priority(nice: i32) -> Option<thread_priority::ThreadPriority> {
-    use thread_priority::{
-        NormalThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
-    };
-    let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle);
-    (0..=100)
-        .filter_map(|value| ThreadPriorityValue::try_from(value).ok())
-        .map(ThreadPriority::Crossplatform)
-        .find(|priority| priority.to_posix(policy) == Ok(nice))
+    (-20..=19)
+        .contains(&nice)
+        .then_some(thread_priority::ThreadPriority::Min)
 }
 
 // A false result can mean the OS changed the policy but a later operation or
