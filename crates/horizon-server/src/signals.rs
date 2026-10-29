@@ -15,10 +15,6 @@ static REQUESTS: AtomicU32 = AtomicU32::new(0);
 #[path = "signals/pending.rs"]
 mod pending;
 
-#[cfg(test)]
-#[path = "signals/pending_tests.rs"]
-mod signal_pending_tests;
-
 #[cfg(unix)]
 #[path = "signals/unix.rs"]
 mod unix;

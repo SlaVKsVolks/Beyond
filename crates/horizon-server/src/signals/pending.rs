@@ -55,3 +55,7 @@ fn generation_wrap_is_defined_like_the_original_private_counter() {
     requests.generation = u32::MAX;
     assert_eq!(requests.observe(), 0);
 }
+
+#[cfg(test)]
+#[path = "pending_tests.rs"]
+mod tests;
