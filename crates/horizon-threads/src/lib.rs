@@ -165,7 +165,7 @@ fn idle() -> bool {
 mod tests {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn idle_selection_preserves_each_nice_and_rejects_out_of_range() {
+    fn idle_selection_validates_each_nice_and_uses_static_priority_zero() {
         use thread_priority::{NormalThreadSchedulePolicy, ThreadSchedulePolicy};
         let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle);
         for nice in -20..=19 {
@@ -174,7 +174,7 @@ mod tests {
                     .unwrap()
                     .to_posix(policy)
                     .unwrap(),
-                nice
+                0
             );
         }
         assert!(super::idle_priority(-21).is_none());
@@ -350,6 +350,116 @@ mod windows_tests {
             done_tx.send(()).unwrap();
             sibling.join().unwrap();
             assert_ne!(before, priority());
+        })
+        .join()
+        .unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    #![forbid(unsafe_code)]
+
+    use std::thread;
+    use thread_priority::{NormalThreadSchedulePolicy, ThreadPriority, ThreadSchedulePolicy};
+
+    fn snapshot() -> (i32, ThreadSchedulePolicy) {
+        (
+            rustix::process::getpriority_process(None).unwrap(),
+            thread_priority::thread_schedule_policy().unwrap(),
+        )
+    }
+
+    // A caller must not confuse Idle's static priority zero with Linux niceness.
+    // Dropping set_idle or resetting niceness to zero must fail this native check.
+    #[test]
+    fn native_idle_preserves_zero_ten_and_nineteen_nice_and_parent() {
+        let parent = snapshot();
+        for nice in [0, 10, 19] {
+            thread::spawn(move || {
+                rustix::process::setpriority_process(None, nice).unwrap();
+                assert_eq!(snapshot().0, nice);
+                assert!(super::set_idle(nice), "idle hint rejected nice {nice}");
+                let (policy, params) = thread_priority::thread_schedule_policy_param(
+                    thread_priority::thread_native_id(),
+                )
+                .unwrap();
+                assert_eq!(
+                    policy,
+                    ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle)
+                );
+                assert_eq!(params.sched_priority, 0);
+                assert_eq!(snapshot().0, nice);
+            })
+            .join()
+            .unwrap();
+            assert_eq!(snapshot(), parent);
+        }
+    }
+
+    #[test]
+    fn native_helpers_increment_nice_or_enter_idle_without_touching_sibling() {
+        let parent = snapshot();
+        // The test thread stays live as an unaffected sibling throughout each call.
+        for (nice, expected_nice, idle) in [(0, 10, false), (10, 10, true), (19, 19, true)] {
+            thread::spawn(move || {
+                rustix::process::setpriority_process(None, nice).unwrap();
+                let before = snapshot();
+                assert!(super::behind());
+                assert_eq!(snapshot().0, expected_nice);
+                assert_eq!(
+                    snapshot().1,
+                    if idle {
+                        ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle)
+                    } else {
+                        before.1
+                    }
+                );
+            })
+            .join()
+            .unwrap();
+            assert_eq!(snapshot(), parent);
+        }
+    }
+
+    #[test]
+    fn invalid_idle_nice_and_priority_fail_without_native_changes() {
+        thread::spawn(|| {
+            let before = snapshot();
+            for nice in [i32::MIN, -21, 20, i32::MAX] {
+                assert!(!super::set_idle(nice));
+                assert_eq!(snapshot(), before);
+            }
+            let invalid = ThreadPriority::Os(1.into());
+            assert!(
+                thread_priority::set_thread_priority_and_policy(
+                    thread_priority::thread_native_id(),
+                    invalid,
+                    ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle),
+                )
+                .is_err()
+            );
+            assert_eq!(snapshot(), before);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn already_inherited_negative_nice_is_preserved_when_available() {
+        let inherited = snapshot().0;
+        if inherited >= 0 {
+            eprintln!("native negative niceness NOT RUN: no legitimately inherited negative nice");
+            return;
+        }
+        thread::spawn(move || {
+            assert_eq!(snapshot().0, inherited);
+            assert!(super::set_idle(inherited));
+            assert_eq!(snapshot().0, inherited);
+            assert_eq!(
+                snapshot().1,
+                ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Idle)
+            );
         })
         .join()
         .unwrap();
