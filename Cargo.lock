@@ -1379,6 +1379,7 @@ dependencies = [
  "horizon-world",
  "log",
  "miniz_oxide 0.8.9",
+ "mod-alloc",
  "naga",
  "png",
  "pollster",
@@ -2119,6 +2120,10 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mod-alloc"
+version = "1.0.1-beyond.1"
 
 [[package]]
 name = "multiversion_no_op"

@@ -540,3 +540,69 @@ Required all-target Windows check passes. Full server tests pass 49/49 with 0 ig
 Complete source/lock-bound commands, raw logs and native identities/outcomes/cleanup receipts remain in the existing ignored full-compliance artifact directory, indexed by `windows-lifecycle-acceptance.json`. Its final independent reviewer recomputed all 51 bound source/input/lock hashes against all four Cargo receipts with zero mismatches and found no Critical, Important or Minor code defect blocking a scoped candidate commit/handoff. The final ledger supersedes its historical NOT RUN/preflight notes without rewriting failures. Native Unix remains explicitly NOT RUN on Windows; hosted CI/protection, allocator implementation, resource-dependent gameplay and final combined readiness remain open. Main was not changed, and no push, deployment, install, hosted job or foreign app control occurred.
 
 The integration owner's reviewed exact 78-new-metadata-file closeout recovered 437,491,768 Windows-allocated bytes (separate volume gain 437,489,664 bytes). No older HOLD/session files, runtime binaries, symbols or evidence were removed. A later nine-directory stat-size representation discrepancy is preserved with both readonly probes, not called a data mutation or silently erased. All new Cargo stages were freshly admitted under the owner's existing 72 GiB full-task-root cap, 128 GiB D free-space floor and 32 GiB C free-space floor, with a 128 MiB estimate plus 256 MiB reserve and at most two build jobs; each completed naturally with unchanged sources/locks and no resource stop. Final sampled root after server tests: 76,662,185,055 bytes. Shared cache binaries/symbols and the small private fixture homes remain owned evidence for pending reviewed composition verification; retire only after that acceptance and exact no-live-reference qualification. No cap increase or broad cleanup was inferred.
+
+
+## Scoped mod-alloc fork evaluation — 2026-10-29 (not integrated)
+
+Explicit owner approval permits the maintained fork, frozen upstream unsafe
+adapter bodies, no unsafe in new code, preserved diagnostics and main held until
+all required gates pass. Scoped Linux verification is separately approved; no
+release/deployment/protection/default-branch change follows. Owned branch is
+`repair/rust-integration-2026-10-27`, base `db752d5fa0a87de0034af5c58f511626caf9b6dc`.
+Main and the parent's divergent combined checkout remain untouched. See
+`third_party/mod-alloc/FORK.md` for owned/frozen boundaries and measurement limits.
+
+| Gate | Actual evidence and remaining limit |
+| --- | --- |
+| Design | Independent exact-state/true-null design reviews conditionally accept safe path; no universal deadlock/starvation claim. |
+| Frozen boundary | Both full unsafe lib items byte-equal; other upstream modules hash-bound including inactive unsafe. Registered audit RED5fail/GREEN6pass, no blanket exclusion. |
+| Core behavior | Literal counter regressions RED3/GREEN3. Expanded exact library8pass includes retained/lower peak, signed negative delta, logical realloc, transactional/sticky failure, six two-pair schedules and concurrent snapshot/finish stress. Finite stress is not Loom/Kani proof. |
+| True null | Actual alloc/zeroed/realloc null via published pinned Chaos INSIDE frozen adapter. Metadata/layout/new-size, old realloc data/pointer/capacity and unchanged counters pass. Realloc selected index1of2 is explicitly truncated, not exhaustive; no OS exhaustion claim. |
+| Windows native | System fresh-process test1pass covers alloc/zeroed/grow/shrink/data/cross-thread free and alloc/free during TLS destruction after another destructor. First-expression startup probe observed no pre-main allocation and exited101; native pre-main coverage NOT established. |
+| Fork compiler | Default30tests including9doctests pass; default all-target and targeted exact Clippy -Dwarnings pass. Exact doctest0tests, not behavior proof. Legacy symbolicate/DHAT all-target check passes with missing-frame-pointer warning; no tracing runtime claim. |
+| Client integration | Both unsafe example allocators replaced by safe exact calls; unconditional client package forbid preserves Clippy policy. All-target check/guardedClippy pending. Root lock adds only mod-alloc path package/direct edge, no upgrades. Rootguard FAILS only pre-existing horizon-threads1target on THIS base, client gap absent. Compose parent's later thread fix, not silent source copy. |
+| Real workloads | Loader/held-object/shared-library/timing/fingerprint source preserved. Actual absence/empty/0/1 mode, prepared-data workload/fingerprint/overhead and parent parity gates NOT RUN. RSS remains separate with existing OS command behavior. |
+| Linux/CI | New exact-repair-branch-only, contents:read, bounded hosted workflow prepared; review/push/run pending. No existing workflow/protection/default change. Initial deliberate exactbranch push avoids manual-dispatch bootstrap through main. |
+| Final acceptance | Final Python/format/public-tree/source review/immutable handoff pending. Main held; missing native/workload/combined gates not passed. |
+
+Evidence: existing ignored `.superpowers/sdd/2026-10-28-full-rust-compliance/allocator-*`
+logs/receipts and `allocator-fork-contract.md`. Single existing Dtaskroot72GiB cap,
+C>=32GiB/D>=128GiB floors,max2jobs,serialized sourcebound stages. No newcache,
+capincrease,oldHOLDdelete,user-data use or reclaim claim.
+
+
+### Fork review and resource execution update — 2026-10-29
+
+Independent whole-candidate review found no allocator correctness/safety defect
+or scoped-workflow authority issue. Its Important checkout reproducibility issue
+was reproduced with actual Git autocrlf smudge (raw frozen lib bytes changed),
+then fixed by a narrowly scoped `.gitattributes` LF rule. All55 fork files were
+freshly exported through Git's checkout filter with autocrlf=true; raw bytes and
+registered audit then passed. The fixed-size AtomicU8 error latch is an explicit
+accepted refinement of the initial AtomicU64-counter contract. Live legacy docs
+now distinguish the fork's1.99.1 floor from the historical upstream1.75 claim.
+
+Full Python:405run/11skip/0fail. All six format scopes passed, with existing
+stable/nightly-option warnings recorded in allocator-format-results.json;
+public-tree/history/diff checks passed. These are not client compiler or native
+workload acceptance. Default fork aggregate is30, not the provisional31 (21normal
+plus9doctests). A bounded actual-System concurrent allocation/free/window round
+was added to the native fixture to cover the contract's real-adapter stress row;
+its amended compiler/native execution remains pending, not inherited from the
+prior native1pass receipt. Other unchanged behavior results remain scoped to
+their actual inputs.
+
+The client all-target check log reached compiler Finished, but its supervisor
+raced process completion after detecting the72GiB cap breach; taskkill returned
+128 and no successful lifecycle receipt exists. It is NOT PASS. The measured
+root was77,766,536,797bytes against77,309,411,328 cap. No compiler remained.
+Independent review qualified only117 newly born clientcheck .bin metadata files;
+753,625,880allocated bytes were removed with normal Cargo locking, same-handle
+identity/hash/unlink and fsynced intent/outcome journal. All832 old HOLD states
+and782 source/runtime bindings were unchanged; lock release was explicitly
+confirmed after checked unlock/close. An additional independently qualified
+parent-owned single completed-producer dep-graph.bin removed148,037,632allocated
+bytes, preserving832HOLD states and2920 source/runtime bindings. No directories,
+images/symbols/rlibs/rmeta/source or broader inventory were deleted. Fresh stage
+admission and a race-safe supervisor are still required; cleanup is not a build
+or main-acceptance result. No cache cap, old HOLD or default configuration changed.

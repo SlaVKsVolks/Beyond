@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKSPACES = {Path('Cargo.toml'), Path('launcher/Cargo.toml'),
               Path('launcher/tests/support/console-probe/Cargo.toml'),
               Path('crates/horizon-telemetry-server/Cargo.toml'),
-              Path('crates/horizon-mod-registry/Cargo.toml')}
+              Path('crates/horizon-mod-registry/Cargo.toml'), Path('third_party/mod-alloc/Cargo.toml')}
 SKIP_DIRS = {Path('.git'), Path('.local'), Path('.superpowers'), Path('target'),
              Path('third_party/wgpu-hal'), Path('launcher/target'),
              Path('crates/horizon-telemetry-server/target'), Path('crates/horizon-mod-registry/target')}
@@ -165,6 +165,13 @@ def audit(root: Path, expected: set[Path]) -> list[str]:
                 elif workspace_lints:
                     for problem in lint_policy_drift(workspace_lints, lints):
                         issues.append(f'{path}: {problem}')
+                if path == Path('third_party/mod-alloc/Cargo.toml'):
+                    if __package__:
+                        from .mod_alloc_integrity import audit_mod_alloc
+                    else:
+                        from mod_alloc_integrity import audit_mod_alloc
+                    issues.extend(audit_mod_alloc(root))
+                    continue
                 rust = table(lints.get('rust'))
                 if not forbid(rust.get('unsafe_code')):
                     issues.append(f'{path}: package unsafe_code forbid missing; {len(package["targets"])} targets require audit')

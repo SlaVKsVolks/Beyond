@@ -14,3 +14,6 @@ docs/api/*-reference.md text eol=lf
 /launcher/tests/support/console_probe.rs !text !eol
 /mods/official/**/*.rs text eol=lf
 /xtask/**/*.rs text eol=lf
+# The registered mod-alloc fork hashes ORIGINAL LF bytes, including inactive
+# unsafe sources. Never let Windows autocrlf change this reviewed boundary.
+/third_party/mod-alloc/** text eol=lf

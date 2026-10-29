@@ -1,0 +1,821 @@
+//! Beyond's maintained mod-alloc fork. See FORK.md for owned/frozen boundaries.
+#![cfg_attr(not(feature = "exact-counters"), doc = include_str!("legacy-docs.md"))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
+#![warn(rust_2018_idioms)]
+
+#[cfg(feature = "backtraces")]
+mod backtrace;
+
+#[cfg(feature = "backtraces")]
+pub use backtrace::CallSiteStats;
+
+#[cfg(feature = "symbolicate")]
+mod symbolicate;
+
+#[cfg(feature = "symbolicate")]
+pub use symbolicate::{SymbolicatedCallSite, SymbolicatedFrame};
+
+#[cfg(feature = "dhat-compat")]
+mod dhat_json;
+
+#[cfg(feature = "dhat-compat")]
+pub mod dhat_compat;
+
+#[cfg(all(test, feature = "exact-counters"))]
+use null_backend::BACKEND as System;
+#[cfg(not(all(test, feature = "exact-counters")))]
+use std::alloc::System;
+use std::alloc::{GlobalAlloc, Layout};
+
+#[cfg(all(feature = "exact-counters", feature = "backtraces"))]
+compile_error!("exact-counters cannot be combined with allocation-reentrant backtraces/symbolicate/dhat-compat; legacy mode retains them");
+
+#[cfg(feature = "exact-counters")]
+mod exact;
+#[cfg(feature = "exact-counters")]
+use exact::ReentryGuard;
+#[cfg(feature = "exact-counters")]
+pub use exact::{AccountingError, ModAlloc, Snapshot};
+
+#[cfg(all(test, feature = "exact-counters"))]
+mod null_backend {
+    #![forbid(unsafe_code)]
+    pub(super) static BACKEND: alloc_chaos::ChaosAllocator<std::alloc::System> =
+        alloc_chaos::ChaosAllocator::system();
+}
+
+#[cfg(not(feature = "exact-counters"))]
+use std::cell::Cell;
+#[cfg(not(feature = "exact-counters"))]
+use std::ptr;
+#[cfg(not(feature = "exact-counters"))]
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
+// Process-wide handle to the installed `ModAlloc`. Populated lazily
+// on the first non-reentrant alloc call. `Profiler` reads from this
+// to locate the canonical counters without requiring an explicit
+// registration call from the user.
+#[cfg(not(feature = "exact-counters"))]
+static GLOBAL_HANDLE: AtomicPtr<ModAlloc> = AtomicPtr::new(ptr::null_mut());
+
+#[cfg(not(feature = "exact-counters"))]
+thread_local! {
+    // Reentrancy flag. Set while inside the tracking path; if any
+    // allocation occurs while set, the recursive call bypasses
+    // tracking and forwards directly to the System allocator.
+    //
+    // `const` initialization (stable since 1.59) avoids any lazy
+    // construction allocation inside the TLS access path.
+    static IN_ALLOC: Cell<bool> = const { Cell::new(false) };
+}
+
+// RAII guard for the reentrancy flag. `enter` returns `None` if the
+// current thread is already inside a tracked allocation (caller
+// must skip counter updates) or if TLS is unavailable (e.g. during
+// thread teardown). The guard clears the flag on drop.
+#[cfg(not(feature = "exact-counters"))]
+struct ReentryGuard;
+
+#[cfg(not(feature = "exact-counters"))]
+impl ReentryGuard {
+    fn enter() -> Option<Self> {
+        IN_ALLOC
+            .try_with(|flag| {
+                if flag.get() {
+                    None
+                } else {
+                    flag.set(true);
+                    Some(ReentryGuard)
+                }
+            })
+            .ok()
+            .flatten()
+    }
+}
+
+#[cfg(not(feature = "exact-counters"))]
+impl Drop for ReentryGuard {
+    fn drop(&mut self) {
+        let _ = IN_ALLOC.try_with(|flag| flag.set(false));
+    }
+}
+
+/// Global allocator wrapper that tracks allocations.
+///
+/// Install as `#[global_allocator]` to enable tracking. The wrapper
+/// forwards every allocation, deallocation, reallocation, and
+/// zero-initialised allocation to [`std::alloc::System`] and records
+/// the event in four lock-free [`AtomicU64`] counters.
+///
+/// # Example
+///
+/// ```no_run
+/// use mod_alloc::ModAlloc;
+///
+/// #[global_allocator]
+/// static GLOBAL: ModAlloc = ModAlloc::new();
+///
+/// fn main() {
+///     let v: Vec<u8> = vec![0; 1024];
+///     let stats = GLOBAL.snapshot();
+///     assert!(stats.alloc_count >= 1);
+///     drop(v);
+/// }
+/// ```
+#[cfg(not(feature = "exact-counters"))]
+pub struct ModAlloc {
+    alloc_count: AtomicU64,
+    total_bytes: AtomicU64,
+    peak_bytes: AtomicU64,
+    current_bytes: AtomicU64,
+    live_count: AtomicU64,
+    peak_live_count: AtomicU64,
+    // `true` only for the allocator behind `dhat_compat::Alloc`: call
+    // sites are then recorded only while a `dhat_compat::Profiler` is
+    // alive, the only time that data is ever written out.
+    #[cfg(feature = "dhat-compat")]
+    sites_need_profiler: bool,
+}
+
+#[cfg(not(feature = "exact-counters"))]
+impl ModAlloc {
+    /// Construct a new `ModAlloc` allocator wrapper.
+    ///
+    /// All counters start at zero. This function is `const`, which
+    /// allows construction in a `static` for use as
+    /// `#[global_allocator]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// static GLOBAL: ModAlloc = ModAlloc::new();
+    /// let stats = GLOBAL.snapshot();
+    /// assert_eq!(stats.alloc_count, 0);
+    /// ```
+    pub const fn new() -> Self {
+        Self {
+            alloc_count: AtomicU64::new(0),
+            total_bytes: AtomicU64::new(0),
+            peak_bytes: AtomicU64::new(0),
+            current_bytes: AtomicU64::new(0),
+            live_count: AtomicU64::new(0),
+            peak_live_count: AtomicU64::new(0),
+            #[cfg(feature = "dhat-compat")]
+            sites_need_profiler: false,
+        }
+    }
+
+    /// Allocator for `dhat_compat::Alloc`: like [`ModAlloc::new`], but
+    /// call sites are recorded only while a `dhat_compat::Profiler`
+    /// is alive.
+    #[cfg(feature = "dhat-compat")]
+    pub(crate) const fn new_profiler_gated() -> Self {
+        let mut a = Self::new();
+        a.sites_need_profiler = true;
+        a
+    }
+
+    /// Whether this allocation event should record its call site.
+    #[cfg(feature = "backtraces")]
+    #[inline(always)]
+    fn records_sites(&self) -> bool {
+        #[cfg(feature = "dhat-compat")]
+        {
+            !self.sites_need_profiler || dhat_compat::profiler_active()
+        }
+        #[cfg(not(feature = "dhat-compat"))]
+        {
+            true
+        }
+    }
+
+    /// Snapshot the current counter values.
+    ///
+    /// Each counter is read independently with `Relaxed` ordering;
+    /// the resulting [`AllocStats`] is a coherent best-effort view
+    /// but does not represent a single atomic moment in time. For
+    /// scoped measurement, prefer [`Profiler`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// let alloc = ModAlloc::new();
+    /// let stats = alloc.snapshot();
+    /// assert_eq!(stats.alloc_count, 0);
+    /// ```
+    pub fn snapshot(&self) -> AllocStats {
+        AllocStats {
+            alloc_count: self.alloc_count.load(Ordering::Relaxed),
+            total_bytes: self.total_bytes.load(Ordering::Relaxed),
+            peak_bytes: self.peak_bytes.load(Ordering::Relaxed),
+            current_bytes: self.current_bytes.load(Ordering::Relaxed),
+            live_count: self.live_count.load(Ordering::Relaxed),
+            peak_live_count: self.peak_live_count.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Reset all counters to zero.
+    ///
+    /// Intended for use at the start of a profile run, before any
+    /// outstanding allocations exist. Calling `reset` while
+    /// allocations are live can cause `current_bytes` to wrap on
+    /// subsequent deallocations; the other counters are unaffected.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// let alloc = ModAlloc::new();
+    /// alloc.reset();
+    /// let stats = alloc.snapshot();
+    /// assert_eq!(stats.alloc_count, 0);
+    /// ```
+    pub fn reset(&self) {
+        self.alloc_count.store(0, Ordering::Relaxed);
+        self.total_bytes.store(0, Ordering::Relaxed);
+        self.peak_bytes.store(0, Ordering::Relaxed);
+        self.current_bytes.store(0, Ordering::Relaxed);
+        self.live_count.store(0, Ordering::Relaxed);
+        self.peak_live_count.store(0, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_alloc(&self, size: u64) {
+        self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        self.total_bytes.fetch_add(size, Ordering::Relaxed);
+        let new_current = self.current_bytes.fetch_add(size, Ordering::Relaxed) + size;
+        self.peak_bytes.fetch_max(new_current, Ordering::Relaxed);
+        let new_live = self.live_count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak_live_count.fetch_max(new_live, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_dealloc(&self, size: u64) {
+        self.current_bytes.fetch_sub(size, Ordering::Relaxed);
+        self.live_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_realloc(&self, old_size: u64, new_size: u64) {
+        self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        if new_size > old_size {
+            let delta = new_size - old_size;
+            self.total_bytes.fetch_add(delta, Ordering::Relaxed);
+            let new_current = self.current_bytes.fetch_add(delta, Ordering::Relaxed) + delta;
+            self.peak_bytes.fetch_max(new_current, Ordering::Relaxed);
+        } else if new_size < old_size {
+            self.current_bytes
+                .fetch_sub(old_size - new_size, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn register_self(&self) {
+        if GLOBAL_HANDLE.load(Ordering::Relaxed).is_null() {
+            let _ = GLOBAL_HANDLE.compare_exchange(
+                ptr::null_mut(),
+                self as *const ModAlloc as *mut ModAlloc,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// Drain the per-call-site aggregation table into a `Vec`.
+    ///
+    /// Available only with the `backtraces` cargo feature. The
+    /// returned vector contains one [`CallSiteStats`] per unique
+    /// call site observed since the table was first written. Each
+    /// row carries up to 8 raw return addresses (top of stack
+    /// first), the number of allocations attributed to that site,
+    /// and the total bytes.
+    ///
+    /// Symbolication (resolving addresses to function names)
+    /// lands in `v0.9.2`. This method exposes raw addresses only.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "backtraces")]
+    /// # fn demo() {
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL: ModAlloc = ModAlloc::new();
+    ///
+    /// let _v: Vec<u8> = vec![0; 1024];
+    /// for site in GLOBAL.call_sites() {
+    ///     println!("{} allocs, {} bytes at {:#x}",
+    ///         site.count, site.total_bytes, site.frames[0]);
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "backtraces")]
+    pub fn call_sites(&self) -> Vec<CallSiteStats> {
+        backtrace::call_sites_report()
+    }
+
+    /// Drain the per-call-site table and symbolicate each frame
+    /// against the running binary's own debug info.
+    ///
+    /// Available only with the `symbolicate` cargo feature, which
+    /// also implies `backtraces`. Returns one
+    /// [`SymbolicatedCallSite`] per unique call site, each
+    /// carrying resolved function names plus (where available)
+    /// source file and line.
+    ///
+    /// Allocates. Safe to call from non-allocator contexts only
+    /// (ordinary user code outside the global-allocator hook).
+    ///
+    /// Results are cached per-address across calls.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "symbolicate")]
+    /// # fn demo() {
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL: ModAlloc = ModAlloc::new();
+    ///
+    /// let _v: Vec<u8> = vec![0; 1024];
+    /// for site in GLOBAL.symbolicated_report() {
+    ///     let top = &site.frames[0];
+    ///     println!("{} allocs / {} bytes at {}",
+    ///         site.count,
+    ///         site.total_bytes,
+    ///         top.function.as_deref().unwrap_or("<unresolved>"));
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "symbolicate")]
+    pub fn symbolicated_report(&self) -> Vec<SymbolicatedCallSite> {
+        symbolicate::symbolicated_report()
+    }
+
+    /// Render the per-call-site report as a DHAT-compatible JSON
+    /// string.
+    ///
+    /// Available only with the `dhat-compat` cargo feature (which
+    /// implies `backtraces`). When the `symbolicate` feature is
+    /// also active, frame strings carry function names and
+    /// (where available) source file and line; otherwise they
+    /// carry raw hex addresses.
+    ///
+    /// Allocates. Safe to call from non-allocator contexts only
+    /// (ordinary user code outside the global-allocator hook).
+    ///
+    /// The output schema (`dhatFileVersion: 2`, `mode: "rust-heap"`)
+    /// matches the format consumed by the upstream
+    /// `dh_view.html` viewer shipped with Valgrind.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "dhat-compat")]
+    /// # fn demo() {
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL: ModAlloc = ModAlloc::new();
+    ///
+    /// let _v: Vec<u8> = vec![0; 1024];
+    /// let json = GLOBAL.dhat_json_string();
+    /// assert!(json.contains("\"dhatFileVersion\":2"));
+    /// # }
+    /// ```
+    #[cfg(feature = "dhat-compat")]
+    pub fn dhat_json_string(&self) -> String {
+        dhat_json::dhat_json_string()
+    }
+
+    /// Render the per-call-site report and write it to `path` as
+    /// DHAT-compatible JSON.
+    ///
+    /// Available only with the `dhat-compat` cargo feature.
+    /// Mirrors `dhat-rs`'s convention of writing
+    /// `dhat-heap.json` to the current directory; pass that path
+    /// to drop a file the upstream viewer will load directly.
+    ///
+    /// Allocates. Safe to call from non-allocator contexts only.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "dhat-compat")]
+    /// # fn demo() -> std::io::Result<()> {
+    /// use mod_alloc::ModAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL: ModAlloc = ModAlloc::new();
+    ///
+    /// let _v: Vec<u8> = vec![0; 1024];
+    /// GLOBAL.write_dhat_json("dhat-heap.json")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "dhat-compat")]
+    pub fn write_dhat_json<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+        dhat_json::write_dhat_json(path.as_ref())
+    }
+}
+
+#[cfg(not(feature = "exact-counters"))]
+impl Default for ModAlloc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// SAFETY: `ModAlloc` adds counter bookkeeping but performs all
+// underlying allocation through [`std::alloc::System`]. Each method
+// forwards its arguments unchanged to `System` and only inspects
+// the result; size/alignment invariants required by the
+// `GlobalAlloc` contract are passed through unmodified, so the
+// caller's contract to us becomes our contract to System.
+//
+// The counter-update path uses thread-local reentrancy detection
+// (see `ReentryGuard`) so that any allocation triggered transitively
+// inside the tracking path bypasses tracking and forwards directly
+// to System, preserving the "hook MUST NOT itself allocate"
+// invariant from REPS section 4.
+unsafe impl GlobalAlloc for ModAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: per `GlobalAlloc::alloc`, `layout` has non-zero
+        // size; we forward unchanged to `System.alloc`, which has
+        // the same contract.
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            if let Some(_g) = ReentryGuard::enter() {
+                let size = layout.size() as u64;
+                self.record_alloc(size);
+                self.register_self();
+                #[cfg(feature = "backtraces")]
+                if self.records_sites() {
+                    backtrace::record_event(size);
+                }
+            }
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: same invariants as `alloc`; `layout` forwarded
+        // unchanged. `System.alloc_zeroed` zero-fills the returned
+        // memory, satisfying the `GlobalAlloc::alloc_zeroed`
+        // contract.
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            if let Some(_g) = ReentryGuard::enter() {
+                let size = layout.size() as u64;
+                self.record_alloc(size);
+                self.register_self();
+                #[cfg(feature = "backtraces")]
+                if self.records_sites() {
+                    backtrace::record_event(size);
+                }
+            }
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: per `GlobalAlloc::dealloc`, `ptr` was returned by a
+        // prior call to `alloc`/`alloc_zeroed`/`realloc` on this
+        // allocator with the given `layout`; we forwarded all of
+        // those to `System` with the same `layout`, so the inverse
+        // pairing for `System.dealloc(ptr, layout)` is valid.
+        unsafe { System.dealloc(ptr, layout) };
+        if let Some(_g) = ReentryGuard::enter() {
+            self.record_dealloc(layout.size() as u64);
+        }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: per `GlobalAlloc::realloc`, `ptr` was returned by
+        // a prior allocation with `layout`, `new_size` is non-zero,
+        // and the alignment in `layout` remains valid for the new
+        // size. We forward all three to `System.realloc` which has
+        // the same contract.
+        let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() {
+            if let Some(_g) = ReentryGuard::enter() {
+                self.record_realloc(layout.size() as u64, new_size as u64);
+                self.register_self();
+                // Per dhat semantics: realloc records as one event
+                // attributed to `new_size` (including shrinks).
+                #[cfg(feature = "backtraces")]
+                if self.records_sites() {
+                    backtrace::record_event(new_size as u64);
+                }
+            }
+        }
+        new_ptr
+    }
+}
+
+/// Snapshot of allocation statistics at a point in time.
+///
+/// Produced by [`ModAlloc::snapshot`] and [`Profiler::stop`].
+///
+/// # Example
+///
+/// ```
+/// use mod_alloc::AllocStats;
+///
+/// // Construct via Default (literal construction is closed off as
+/// // of v1.0 — see "Stability" below).
+/// let mut stats = AllocStats::default();
+/// stats.alloc_count = 10;
+/// stats.total_bytes = 1024;
+/// assert_eq!(stats.alloc_count, 10);
+/// ```
+///
+/// # Stability
+///
+/// Marked `#[non_exhaustive]` as of v1.0.0. New counter fields may
+/// be added in future minor versions without bumping the major
+/// version. Construct via [`AllocStats::default`] (or consume
+/// snapshots from [`ModAlloc::snapshot`] / [`Profiler::stop`])
+/// rather than struct-literal syntax. Reading individual fields by
+/// name is fully stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+#[cfg(not(feature = "exact-counters"))]
+pub struct AllocStats {
+    /// Number of allocations performed.
+    pub alloc_count: u64,
+    /// Total bytes allocated across all allocations. Reallocations
+    /// contribute the growth delta (or zero on shrink).
+    pub total_bytes: u64,
+    /// Peak resident bytes (highest `current_bytes` ever observed).
+    pub peak_bytes: u64,
+    /// Currently-allocated bytes (allocations minus deallocations).
+    pub current_bytes: u64,
+    /// Currently-alive allocation count (allocations minus
+    /// deallocations). Mirrors `dhat::HeapStats::curr_blocks`.
+    pub live_count: u64,
+    /// Peak live allocation count (highest `live_count` ever
+    /// observed). Mirrors `dhat::HeapStats::max_blocks`.
+    pub peak_live_count: u64,
+}
+
+/// Scoped profiler that captures a delta between start and stop.
+///
+/// Read the snapshot of the installed [`ModAlloc`] on construction
+/// and again on [`Profiler::stop`], returning the difference. If no
+/// `ModAlloc` is installed as `#[global_allocator]` and no
+/// allocation has occurred through it yet, both snapshots are
+/// zero and the delta is zero.
+///
+/// # Example
+///
+/// ```no_run
+/// use mod_alloc::{ModAlloc, Profiler};
+///
+/// #[global_allocator]
+/// static GLOBAL: ModAlloc = ModAlloc::new();
+///
+/// fn main() {
+///     let p = Profiler::start();
+///     let v: Vec<u8> = vec![0; 1024];
+///     drop(v);
+///     let stats = p.stop();
+///     println!("Captured {} alloc events", stats.alloc_count);
+/// }
+/// ```
+#[cfg(not(feature = "exact-counters"))]
+pub struct Profiler {
+    baseline: AllocStats,
+}
+
+#[cfg(not(feature = "exact-counters"))]
+impl Profiler {
+    /// Begin profiling, capturing the current allocation state.
+    ///
+    /// If no `ModAlloc` is installed as `#[global_allocator]` or no
+    /// allocation has occurred yet, the captured baseline is all
+    /// zeros.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mod_alloc::Profiler;
+    ///
+    /// let p = Profiler::start();
+    /// let _delta = p.stop();
+    /// ```
+    pub fn start() -> Self {
+        Self {
+            baseline: current_snapshot_or_zeros(),
+        }
+    }
+
+    /// Stop profiling and return the delta from start.
+    ///
+    /// `alloc_count`, `total_bytes`, and `current_bytes` are deltas
+    /// from `start()` to `stop()`. `peak_bytes` is the absolute
+    /// high-water mark observed during the profiling window (peak
+    /// has no meaningful delta semantic).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mod_alloc::Profiler;
+    ///
+    /// let p = Profiler::start();
+    /// let stats = p.stop();
+    /// assert_eq!(stats.alloc_count, 0);
+    /// ```
+    pub fn stop(self) -> AllocStats {
+        let now = current_snapshot_or_zeros();
+        AllocStats {
+            alloc_count: now.alloc_count.saturating_sub(self.baseline.alloc_count),
+            total_bytes: now.total_bytes.saturating_sub(self.baseline.total_bytes),
+            current_bytes: now
+                .current_bytes
+                .saturating_sub(self.baseline.current_bytes),
+            peak_bytes: now.peak_bytes,
+            live_count: now.live_count.saturating_sub(self.baseline.live_count),
+            peak_live_count: now.peak_live_count,
+        }
+    }
+}
+
+#[cfg(not(feature = "exact-counters"))]
+pub(crate) fn current_snapshot_or_zeros() -> AllocStats {
+    let p = GLOBAL_HANDLE.load(Ordering::Acquire);
+    if p.is_null() {
+        AllocStats {
+            alloc_count: 0,
+            total_bytes: 0,
+            peak_bytes: 0,
+            current_bytes: 0,
+            live_count: 0,
+            peak_live_count: 0,
+        }
+    } else {
+        // SAFETY: `GLOBAL_HANDLE` is only ever set by
+        // `ModAlloc::register_self` to point at the address of a
+        // `#[global_allocator] static` (or any other `'static`
+        // `ModAlloc`). That target has `'static` lifetime, so the
+        // pointer remains valid for the remainder of the program.
+        // We produce only a shared borrow used to call `&self`
+        // methods that read atomic counters; no mutation through
+        // the pointer occurs here.
+        unsafe { (*p).snapshot() }
+    }
+}
+
+#[cfg(all(test, not(feature = "exact-counters")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocator_constructs() {
+        let _ = ModAlloc::new();
+    }
+
+    #[test]
+    fn snapshot_returns_zeros_initially() {
+        let a = ModAlloc::new();
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 0);
+        assert_eq!(s.total_bytes, 0);
+        assert_eq!(s.peak_bytes, 0);
+        assert_eq!(s.current_bytes, 0);
+    }
+
+    #[test]
+    fn reset_works() {
+        let a = ModAlloc::new();
+        a.reset();
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 0);
+    }
+
+    #[test]
+    fn record_alloc_updates_counters() {
+        let a = ModAlloc::new();
+        a.record_alloc(128);
+        a.record_alloc(256);
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 2);
+        assert_eq!(s.total_bytes, 384);
+        assert_eq!(s.current_bytes, 384);
+        assert_eq!(s.peak_bytes, 384);
+    }
+
+    #[test]
+    fn record_dealloc_decreases_current_only() {
+        let a = ModAlloc::new();
+        a.record_alloc(1000);
+        a.record_dealloc(400);
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 1);
+        assert_eq!(s.total_bytes, 1000);
+        assert_eq!(s.current_bytes, 600);
+        assert_eq!(s.peak_bytes, 1000);
+        // live_count tracks the *count* of alive allocations, not
+        // bytes — a single alloc + a single (partial) dealloc
+        // event leaves zero alive allocations from the counter's
+        // perspective even though current_bytes is non-zero.
+        // This mirrors dhat's curr_blocks semantics where every
+        // alloc/dealloc pair is a 1:1 block lifecycle.
+        assert_eq!(s.live_count, 0);
+        assert_eq!(s.peak_live_count, 1);
+    }
+
+    #[test]
+    fn live_counters_track_alive_blocks() {
+        let a = ModAlloc::new();
+        a.record_alloc(100);
+        a.record_alloc(200);
+        a.record_alloc(300);
+        let s = a.snapshot();
+        assert_eq!(s.live_count, 3);
+        assert_eq!(s.peak_live_count, 3);
+
+        a.record_dealloc(100);
+        a.record_dealloc(200);
+        let s = a.snapshot();
+        assert_eq!(s.live_count, 1);
+        assert_eq!(s.peak_live_count, 3, "peak holds high-water mark");
+    }
+
+    #[test]
+    fn record_realloc_does_not_touch_live_count() {
+        let a = ModAlloc::new();
+        a.record_alloc(100);
+        let pre = a.snapshot();
+        a.record_realloc(100, 250);
+        let post = a.snapshot();
+        assert_eq!(
+            pre.live_count, post.live_count,
+            "realloc keeps the same block, live_count unchanged"
+        );
+    }
+
+    #[test]
+    fn record_realloc_growth_updates_total_and_peak() {
+        let a = ModAlloc::new();
+        a.record_alloc(100);
+        a.record_realloc(100, 250);
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 2);
+        assert_eq!(s.total_bytes, 250);
+        assert_eq!(s.current_bytes, 250);
+        assert_eq!(s.peak_bytes, 250);
+    }
+
+    #[test]
+    fn record_realloc_shrink_only_adjusts_current() {
+        let a = ModAlloc::new();
+        a.record_alloc(500);
+        a.record_realloc(500, 200);
+        let s = a.snapshot();
+        assert_eq!(s.alloc_count, 2);
+        assert_eq!(s.total_bytes, 500);
+        assert_eq!(s.current_bytes, 200);
+        assert_eq!(s.peak_bytes, 500);
+    }
+
+    #[test]
+    fn peak_holds_high_water_mark() {
+        let a = ModAlloc::new();
+        a.record_alloc(1000);
+        a.record_dealloc(1000);
+        a.record_alloc(500);
+        let s = a.snapshot();
+        assert_eq!(s.peak_bytes, 1000);
+        assert_eq!(s.current_bytes, 500);
+    }
+
+    #[test]
+    fn reentry_guard_blocks_nested_entry() {
+        let outer = ReentryGuard::enter();
+        assert!(outer.is_some());
+        let inner = ReentryGuard::enter();
+        assert!(inner.is_none(), "nested entry must be denied");
+        drop(outer);
+        let after = ReentryGuard::enter();
+        assert!(after.is_some(), "entry must be allowed after outer drops");
+    }
+
+    #[test]
+    fn profiler_start_stop_with_no_handle() {
+        let p = Profiler::start();
+        let s = p.stop();
+        assert_eq!(s.alloc_count, 0);
+    }
+}
+
+#[cfg(all(test, feature = "exact-counters"))]
+mod null_tests;
