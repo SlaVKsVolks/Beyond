@@ -54,3 +54,8 @@ harness = false
 name = "unix_signals"
 path = "tests/unix_signals.rs"
 harness = false
+
+[[test]]
+name = "windows_signal_lifecycle"
+path = "tests/windows_signal_lifecycle.rs"
+harness = false
