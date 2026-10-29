@@ -430,7 +430,12 @@ mod linux_tests {
                 assert!(!super::set_idle(nice));
                 assert_eq!(snapshot(), before);
             }
-            let invalid = ThreadPriority::Os(1.into());
+            let invalid = ThreadPriority::Deadline {
+                runtime: std::time::Duration::ZERO,
+                deadline: std::time::Duration::ZERO,
+                period: std::time::Duration::ZERO,
+                flags: thread_priority::DeadlineFlags::empty(),
+            };
             assert!(
                 thread_priority::set_thread_priority_and_policy(
                     thread_priority::thread_native_id(),
